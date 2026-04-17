@@ -1,0 +1,6 @@
+geopandas
+shapely
+rtree
+requests
+rapidfuzz
+tqdm

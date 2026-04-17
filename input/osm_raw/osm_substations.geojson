@@ -1,0 +1,18 @@
+{
+"type": "FeatureCollection",
+"name": "osm_substations",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "id": "osm_node_648763447", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 94.2394072, 18.8537989 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_2374600338", "name": "Ngan Tay Power Plant", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 97.6536906, 16.4651892 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_3541427526", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.1569934, 16.7956932 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_6694542687", "name": "မီးအားျမွင့္စက္", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 97.6079813, 16.6452428 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_6694542708", "name": "မီးအားျမွင့္စက္", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 97.6149881, 16.6365156 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_11364780625", "name": "NgaByeMa SS", "voltage": "66000", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 94.3268833, 16.1032557 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_11365041884", "name": "(33/11)kV Sport SS", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.066079, 19.7723582 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_11365041890", "name": "(230/66/33/11)kV PMN", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.23472, 19.734085 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_11365041891", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.069596, 19.78846 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_11365054115", "name": "MPT SS", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.1034386, 19.667043 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_12829507065", "name": "လျှပ်စစ်ဓာတ်အားခွဲရုံ (ကညွတ်ကွင်းမြို့)", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "substation" }, "geometry": { "type": "Point", "coordinates": [ 96.4832976, 18.3560129 ] } }
+]
+}

@@ -1,0 +1,19 @@
+{
+"type": "FeatureCollection",
+"name": "osm_plants",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "id": "osm_node_4483811601", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 98.6033645, 12.4430479 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_4483811602", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 98.6059751, 12.4439225 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_4483811603", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 98.5990362, 12.4460257 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_4572573494", "name": "Power Generator", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 98.0751288, 12.367947 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_5167514118", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 98.2779649, 13.8641143 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_6457462376", "name": "ကျေးရွာမီးစက်", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 99.0174533, 12.0897866 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_6457462397", "name": "ကျေးရွာမီးစက်", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": null }, "geometry": { "type": "Point", "coordinates": [ 99.060187, 12.1316904 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_9273390235", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": "120 MW" }, "geometry": { "type": "Point", "coordinates": [ 99.1295448, 14.4067108 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_9273390236", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": "120 MW" }, "geometry": { "type": "Point", "coordinates": [ 99.1296621, 14.4065633 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_9273390237", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": "120 MW" }, "geometry": { "type": "Point", "coordinates": [ 99.1297795, 14.4064159 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_9273390238", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": "180 MW" }, "geometry": { "type": "Point", "coordinates": [ 99.1298968, 14.4062685 ] } },
+{ "type": "Feature", "properties": { "id": "osm_node_9273390239", "name": "Unknown", "voltage": "", "source": "OSM", "confidence_score": 0.7, "type": "generator", "capacity": "180 MW" }, "geometry": { "type": "Point", "coordinates": [ 99.1300142, 14.4061211 ] } }
+]
+}
