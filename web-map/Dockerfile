@@ -12,5 +12,6 @@ FROM node:20-alpine
 WORKDIR /app
 RUN npm install -g vite
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/vite.config.js ./vite.config.js
 EXPOSE 4173
-CMD ["vite", "preview", "--host", "0.0.0.0", "--port", "4173", "--allowed-hosts", "grid.triunemyanmar.com"]
+CMD ["vite", "preview", "--host", "0.0.0.0", "--port", "4173"]
