@@ -486,6 +486,29 @@ function WindRoseChart({ data, color }) {
   );
 }
 
+// ── Diurnal Wind Chart (24-Hour Profile) ────────────────────────────────────
+function DiurnalChart({ data, color }) {
+  if (!data?.length) return null;
+  const max = Math.max(...data) || 1;
+  const chartMax = max * 1.15; // padding
+  return (
+    <div className="mini-bar-chart" style={{ paddingBottom: 16 }}>
+      {data.map((v, i) => (
+        <div key={i} className="mini-bar-col" style={{ flex: 1 }}>
+          <div className="mini-bar-track" style={{ background: 'rgba(255,255,255,0.02)' }}>
+            <div className="mini-bar-fill" style={{ height: `${(v / chartMax) * 100}%`, background: color, borderTopLeftRadius: 2, borderTopRightRadius: 2 }} />
+          </div>
+          {(i % 6 === 0 || i === 23) && (
+            <span className="mini-bar-label" style={{ position: 'absolute', bottom: -16, left: '50%', transform: 'translateX(-50%)', opacity: 0.7 }}>
+              {i}h
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Capacity Factor proxy from mean wind speed (generic Class II/III power curve)
 function windCF(ws) {
   if (!ws || ws <= 0) return 0;
@@ -504,6 +527,7 @@ function ConfigPanel({ point, onRun, onCancel }) {
   const [tech, setTech]     = useState(null);   // 'solar' | 'wind'
   const [capMW, setCapMW]   = useState(50);
   const [mounting, setMounting] = useState('fixed'); // 'fixed' | 'tracking'
+  const [hubHeight, setHubHeight] = useState(100);
 
   return (
     <div className="viability-root">
@@ -563,11 +587,25 @@ function ConfigPanel({ point, onRun, onCancel }) {
           </div>
         )}
 
-        {/* Wind-only: capacity guidance */}
+        {/* Wind-only: Hub Height & Info */}
         {tech === 'wind' && (
-          <div className="config-note">
-            <span>Wind analysis uses ERA5 reanalysis at 100m hub height. Capacity factor estimated from generic IEC Class II/III power curve.</span>
-          </div>
+          <>
+            <div className="config-group">
+              <div className="config-label-row">
+                <span className="config-label">Turbine Hub Height</span>
+                <strong className="config-val" style={{ color: '#a7f3d0' }}>{hubHeight} m</strong>
+              </div>
+              <input type="range" min={80} max={160} step={10} value={hubHeight}
+                onChange={e => setHubHeight(+e.target.value)}
+                className="radius-slider"
+                style={{ accentColor: '#a7f3d0' }}
+                aria-label="Turbine hub height in meters" />
+              <div className="config-range-labels"><span>80 m</span><span>160 m</span></div>
+            </div>
+            <div className="config-note">
+              <span>Wind analysis computes a local Shear Exponent (α) from 10m/100m ERA5 data to extrapolate speeds to your custom hub height.</span>
+            </div>
+          </>
         )}
 
         {/* Voltage requirement preview */}
@@ -586,7 +624,7 @@ function ConfigPanel({ point, onRun, onCancel }) {
           <button
             className={`config-run-btn ${tech ? 'config-run-btn--ready' : ''}`}
             disabled={!tech}
-            onClick={() => onRun({ tech, capMW, mounting })}>
+            onClick={() => onRun({ tech, capMW, mounting, hubHeight })}>
             ▶ Run Analysis
           </button>
         </div>
@@ -597,7 +635,7 @@ function ConfigPanel({ point, onRun, onCancel }) {
 
 // ── Analysis Dashboard (Stage 2 of 2) ──────────────────────────────────────
 function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfigure, onNewPin }) {
-  const { tech, capMW } = config;
+  const { tech, capMW, hubHeight = 100 } = config;
 
   // ── Monthly chart state — Phase 5: moved out of useMemo to local state ──
   const [solarMonthlyDisplay, setSolarMonthlyDisplay] = useState(null);
@@ -614,28 +652,35 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
 
   useEffect(() => {
     if (meteoData?.windMonthly?.length) {
-      const scaled = meteoData.windMonthly.map(m =>
-        m ? Math.round(capMW * 8760 / 12 * windCF(m) * 0.85 / 1000 * 10) / 10 : 0
-      );
+      const shearMultiplier = Math.pow(hubHeight / 100, meteoData.alpha ?? 0.143);
+      const scaled = meteoData.windMonthly.map(m => {
+        if (!m) return 0;
+        const vHub = m * shearMultiplier;
+        return Math.round(capMW * 8760 / 12 * windCF(vHub) * 0.85 / 1000 * 10) / 10;
+      });
       setWindMonthlyDisplay(scaled);
       setChartVersion(v => v + 1);
     }
-  }, [meteoData?.windMonthly, capMW]);
+  }, [meteoData?.windMonthly, meteoData?.alpha, capMW, hubHeight]);
 
   // ── Derived values ────────────────────────────────────────────────────────
   const solarYield   = meteoData?.solarYield ?? null;
   const ws100        = meteoData?.ws100 ?? null;
+  const alpha        = meteoData?.alpha ?? 0.143;
   const slopeMax     = meteoData?.slopeMax ?? null;
   const roadDistKm   = meteoData?.roadDistKm ?? null;
 
-  const cf           = windCF(ws100);
+  const shearMultiplier = Math.pow(hubHeight / 100, alpha);
+  const wsActual = ws100 ? ws100 * shearMultiplier : null;
+
+  const cf           = windCF(wsActual);
   const solarGWhYr   = solarYield ? (capMW * 1000 * solarYield) / 1e6 : null;
-  const windGWhYr    = ws100 ? Math.round(capMW * 8760 * cf * 0.85 / 1000 * 10) / 10 : null;
+  const windGWhYr    = wsActual ? Math.round(capMW * 8760 * cf * 0.85 / 1000 * 10) / 10 : null;
   const solarLandHa  = Math.round(capMW * 1.5);
   const windLeaseHa  = Math.round(capMW * 25);
 
   // ── Score modules ─────────────────────────────────────────────────────────
-  const resourceScore = result ? Math.round(scoreResource(tech, solarYield, ws100)) : 0;
+  const resourceScore = result ? Math.round(scoreResource(tech, solarYield, tech === 'wind' ? wsActual : ws100)) : 0;
   const gridScores    = result ? scoreGridIntegration(result.subDist, result.lineDist, result.subVoltage, capMW) : null;
   const siteScores    = result ? scoreSite(tech, slopeMax, roadDistKm) : null;
   const composite     = Math.round(gridScores && siteScores ? resourceScore + gridScores.total + siteScores.total : 0);
@@ -660,10 +705,10 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
       else if (solarYield >= 1500) flags.push({ type: 'yellow', text: `Solar yield ${Math.round(solarYield).toLocaleString()} kWh/kWp/yr — Class II (Good)` });
       else                         flags.push({ type: 'red',    text: `Solar yield ${Math.round(solarYield).toLocaleString()} kWh/kWp/yr — marginal resource` });
     }
-    if (tech === 'wind' && ws100) {
-      if (ws100 >= 7.0)            flags.push({ type: 'green',  text: `Wind ${ws100.toFixed(1)} m/s @ 100m — viable resource` });
-      else if (ws100 >= 5.5)       flags.push({ type: 'yellow', text: `Wind ${ws100.toFixed(1)} m/s @ 100m — marginal, check micro-siting` });
-      else                         flags.push({ type: 'red',    text: `Wind ${ws100.toFixed(1)} m/s @ 100m — below commercial threshold` });
+    if (tech === 'wind' && wsActual) {
+      if (wsActual >= 7.0)            flags.push({ type: 'green',  text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — viable resource` });
+      else if (wsActual >= 5.5)       flags.push({ type: 'yellow', text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — marginal, check micro-siting` });
+      else                         flags.push({ type: 'red',    text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — below commercial threshold` });
     }
   }
 
@@ -841,8 +886,17 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
             )}
             {tech === 'wind' && meteoData?.windRose && (
               <div className="dash-section">
-                <div className="vsec-title">Annual Wind Rose (100m)</div>
+                <div className="vsec-title" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Annual Wind Rose ({hubHeight}m)</span>
+                  <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 'normal' }}>Shear α = {(meteoData.alpha || 0.143).toFixed(2)}</span>
+                </div>
                 <WindRoseChart data={meteoData.windRose} color="#a7f3d0" />
+              </div>
+            )}
+            {tech === 'wind' && meteoData?.diurnal && (
+              <div className="dash-section">
+                <div className="vsec-title">Diurnal Wind Profile (24h)</div>
+                <DiurnalChart data={meteoData.diurnal} color="#34d399" />
               </div>
             )}
 
@@ -1332,25 +1386,42 @@ export default function App() {
       } catch { /* elev api miss */ }
 
       // ── Wind from Open-Meteo Archive ──────────────────────────────────────
-      let ws100ann = null, windMonthly = null, windRose = null;
+      let ws100ann = null, windMonthly = null, windRose = null, alpha = 0.143, diurnal = null;
       try {
         const hourly = windArchive?.hourly;
         const times  = hourly?.time ?? [];
-        const speeds = hourly?.wind_speed_100m ?? [];
+        const speeds100 = hourly?.wind_speed_100m ?? [];
+        const speeds10  = hourly?.wind_speed_10m ?? [];
         const dirs   = hourly?.wind_direction_100m ?? [];
         
-        if (speeds.length > 0) {
-          ws100ann = speeds.reduce((s, v) => s + v, 0) / speeds.length;
+        if (speeds100.length > 0) {
+          ws100ann = speeds100.reduce((s, v) => s + v, 0) / speeds100.length;
           
           const monthAccum = Array.from({ length: 12 }, () => ({ sum: 0, count: 0 }));
+          const hourAccum  = Array.from({ length: 24 }, () => ({ sum: 0, count: 0 }));
           const sectorCounts = Array(16).fill(0);
           let validDirCount = 0;
+          let alphaSum = 0, alphaCount = 0;
 
           times.forEach((t, i) => {
-            const mo = new Date(t * 1000).getMonth();
-            if (!isNaN(mo) && speeds[i] != null) {
-              monthAccum[mo].sum += speeds[i];
+            const date = new Date(t * 1000);
+            const mo = date.getMonth();
+            const hr = date.getHours();
+            
+            const v100 = speeds100[i];
+            const v10  = speeds10[i];
+
+            if (v100 != null && v10 != null && v10 > 1.0 && v100 > v10) {
+              const a = Math.log(v100 / v10) / Math.log(100 / 10);
+              alphaSum += a;
+              alphaCount++;
+            }
+
+            if (!isNaN(mo) && v100 != null) {
+              monthAccum[mo].sum += v100;
               monthAccum[mo].count++;
+              hourAccum[hr].sum += v100;
+              hourAccum[hr].count++;
               
               if (dirs[i] != null) {
                 // Ensure 0-360 range, shift by half-sector (11.25) to center N, modulo 360, divide by 22.5
@@ -1361,7 +1432,13 @@ export default function App() {
             }
           });
           
+          if (alphaCount > 100) {
+             alpha = Math.max(0.08, Math.min(0.35, alphaSum / alphaCount));
+          }
+          
           windMonthly = monthAccum.map(m => m.count > 0 ? Math.round(m.sum / m.count * 100) / 100 : null);
+          diurnal = hourAccum.map(h => h.count > 0 ? Math.round(h.sum / h.count * 100) / 100 : null);
+          
           if (validDirCount > 0) {
             windRose = sectorCounts.map(c => c / validDirCount); // store as frequencies 0-1
           }
@@ -1387,7 +1464,7 @@ export default function App() {
         }
       } catch { /* turf error */ }
 
-      setMeteoData({ solarYield, solarMonthly, ws100: ws100ann, windMonthly, windRose, slopeMax, slopeAspect, roadDistKm });
+      setMeteoData({ solarYield, solarMonthly, ws100: ws100ann, windMonthly, windRose, diurnal, alpha, slopeMax, slopeAspect, roadDistKm });
       setMeteoLoading(false);
       setAnalysisPhase('results');
     }).catch((err) => {
