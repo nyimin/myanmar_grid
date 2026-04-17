@@ -174,7 +174,6 @@ p { margin: 0; }
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px;
   flex-shrink: 0;
-  align-self: flex-end;
   margin: var(--sp-2);
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid var(--border-subtle);
@@ -190,7 +189,6 @@ p { margin: 0; }
   position: absolute;
   top: 50%; left: 50%;
   transform: translate(-50%, -50%);
-  align-self: center;
 }
 .sidebar-content {
   padding: 0 var(--sp-5) var(--sp-5);

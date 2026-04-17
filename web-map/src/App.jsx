@@ -8,9 +8,10 @@ import {
   MapPin, Search, X, GitBranch, Map as MapIcon,
   Crosshair, ClipboardCopy, Check, Ruler, Undo2, Trash2,
   Moon, Sun, Home, ChevronLeft, ChevronRight, Layers, Zap,
-  Triangle, Droplets,
+  Triangle, Droplets, LogOut
 } from 'lucide-react';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import { useAuth } from './contexts/AuthContext';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const MAP_STYLES = {
@@ -127,7 +128,6 @@ function scoreResource(tech, solarYield, ws100) {
 
 // ── Site Feasibility scoring (30 pts) ─────────────────────────────────────
 function scoreSite(tech, slopeMax, roadDistKm) {
-  const slopeThreshold = tech === 'wind' ? 20 : 12;
   let slopeScore = 0;
   if (slopeMax === null) {
     slopeScore = 10; // unknown — neutral half score
@@ -428,15 +428,13 @@ function ProximityContent({ results, radius, onRadiusChange, onJumpTo }) {
 // ── Mini Bar Chart ──────────────────────────────────────────────────────────
 const MONTH_LABELS = ['J','F','M','A','M','J','J','A','S','O','N','D'];
 function MiniBarChart({ data, color }) {
-  const [display, setDisplay] = useState([]);
-  useEffect(() => { if (data?.length) setDisplay([...data]); }, [data]);
-  const max = display.length ? Math.max(...display.map(v => v || 0)) : 0;
-  if (!display.length || !max) return (
+  const max = data?.length ? Math.max(...data.map(v => v || 0)) : 0;
+  if (!data?.length || !max) return (
     <div style={{fontSize:'0.7rem',color:'var(--text-muted)',padding:'4px 0'}}>No chart data available</div>
   );
   return (
     <div className="mini-bar-chart">
-      {display.map((v, i) => (
+      {data.map((v, i) => (
         <div key={i} className="mini-bar-col">
           <div className="mini-bar-track">
             <div className="mini-bar-fill" style={{ height: `${max > 0 ? ((v || 0) / max) * 100 : 0}%`, background: color }} />
@@ -900,7 +898,7 @@ function MeasureContent({ points, mousePos, onUndo, onClear }) {
 // ── Analysis Panel (unified) ───────────────────────────────────────────────
 function AnalysisPanel({
   panelState, onClose, adjacencyMap,
-  proximityResults, proximityRadius, onProximityRadiusChange,
+  proximityResults, proximityRadius, onProximityRadiusChange, onProximityJump,
   measurePoints, measureMousePos, onMeasureUndo, onMeasureClear,
   meteoData, meteoLoading, viabilityResult,
   analysisPhase, viabilityPoint, viabilityConfig, onRunAnalysis, onReconfigure, onNewPin,
@@ -1058,6 +1056,7 @@ function StatusStrip({ stats, activeTool, onResetHome, regionFilter }) {
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
+  const { logout } = useAuth();
   // ── Core map state
   const [viewState, setViewState]   = useState(INITIAL_VIEW_STATE);
   const [hoverInfo, setHoverInfo]   = useState(null);
@@ -1490,6 +1489,13 @@ export default function App() {
     };
   }, [filteredData]);
 
+  const layerCounts = useMemo(() => ({
+    lines: filteredData.lines?.features?.length ?? 0,
+    substations: filteredData.substations?.features?.length ?? 0,
+    plants: filteredData.plants?.features?.length ?? 0,
+    hydro: filteredData.hydro?.features?.length ?? 0,
+  }), [filteredData]);
+
   // ── Proximity results ──────────────────────────────────────────────────────
   const proximityResults = useMemo(() => {
     if (!proximityCenter) return [];
@@ -1502,7 +1508,7 @@ export default function App() {
       const coords = getPointCoords(f);
       if (!coords) return null;
       const dist = haversineKm(lat, lng, coords[1], coords[0]);
-      return dist <= proximityRadius ? { props: f.properties, dist } : null;
+      return dist <= proximityRadius ? { props: f.properties, dist, feature: f } : null;
     }).filter(Boolean).sort((a, b) => a.dist - b.dist);
   }, [proximityCenter, proximityRadius, geoData]);
 
@@ -1774,6 +1780,9 @@ export default function App() {
                 <h1>Myanmar Power Grid</h1>
                 <p>Interactive Infrastructure Map</p>
               </div>
+              <button className="icon-btn" onClick={logout} title="Sign Out" aria-label="Sign Out" style={{ marginLeft: 'auto', background: 'transparent' }}>
+                <LogOut size={16} color="#94a3b8" />
+              </button>
             </div>
 
             {/* Search */}
@@ -1995,9 +2004,41 @@ export default function App() {
               <label className="filter-label">Generation Mix</label>
               <DonutChart data={stats.donutData} onFilterSeg={setFuelFilter} />
             </div>
+
+            {/* Logout Button */}
+            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
+              <button 
+                onClick={logout} 
+                style={{ 
+                  width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', 
+                  padding: '8px 12px', borderRadius: '6px', fontSize: '0.8rem', fontWeight: 500,
+                  background: 'rgba(239,68,68,0.1)', color: '#fca5a5', border: '1px solid rgba(239,68,68,0.2)',
+                  cursor: 'pointer', transition: 'all 0.2s'
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.2)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; }}
+                aria-label="Sign Out"
+              >
+                <LogOut size={16} />
+                Sign Out
+              </button>
+            </div>
+
           </div>
         )}
       </nav>
+
+      {/* Sticky hint strip */}
+      {hoveredSubId && !activeTool && !analysisPanel.type && (
+        <div style={{
+          position: 'absolute', bottom: 80, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(255,215,0,0.12)', border: '1px solid rgba(255,215,0,0.3)',
+          color: '#ffd700', padding: '6px 16px', borderRadius: 20, fontSize: '0.75rem',
+          zIndex: 9, pointerEvents: 'none', animation: 'fadeUp 0.18s ease-out'
+        }}>
+          Click substation to trace connectivity
+        </div>
+      )}
 
       {/* Unified Analysis Panel — no collision possible */}
       <AnalysisPanel
@@ -2007,6 +2048,7 @@ export default function App() {
         proximityResults={proximityResults}
         proximityRadius={proximityRadius}
         onProximityRadiusChange={setProximityRadius}
+        onProximityJump={(f) => { handlePanelClose(); jumpToFeature(f); }}
         measurePoints={measurePoints}
         measureMousePos={measureMousePos}
         onMeasureUndo={() => setMeasurePoints(prev => prev.slice(0, -1))}

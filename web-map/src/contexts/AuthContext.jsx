@@ -6,34 +6,55 @@ const pb = new PocketBase(import.meta.env.VITE_API_URL);
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Initialize with the current auth store state right away
+  const [user, setUser] = useState(pb.authStore.isValid ? pb.authStore.model : null);
+  const [loading, setLoading] = useState(!pb.authStore.isValid);
 
   useEffect(() => {
-    pb.authStore.loadFromCookie('pb_auth');
-    if (pb.authStore.isValid) {
-      setUser(pb.authStore.model);
-    }
-    setLoading(false);
+    let isMounted = true;
+
+    const checkAuth = async () => {
+      try {
+        if (pb.authStore.isValid) {
+          // This silently refreshes the session with the server
+          await pb.collection('users').authRefresh();
+          if (isMounted) setUser(pb.authStore.model);
+        } else {
+          if (isMounted) setUser(null);
+        }
+      } catch (err) {
+        // If refresh fails (e.g., token expired or invalidated on server), log out
+        console.warn('Auth refresh failed:', err);
+        pb.authStore.clear();
+        if (isMounted) setUser(null);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    checkAuth();
 
     const unsub = pb.authStore.onChange((token, model) => {
-      setUser(model);
+      if (isMounted) setUser(model);
     });
 
-    return unsub;
+    return () => {
+      isMounted = false;
+      unsub();
+    };
   }, []);
 
   const login = async (email, password) => {
     const authData = await pb.collection('users').authWithPassword(email, password);
-    pb.authStore.exportToCookie({ httpOnly: false, secure: true, sameSite: 'Strict' });
+    // Token automatically saved to localStorage by PocketBase
     return authData;
   };
 
   const logout = () => {
-    pb.authStore.clear();
-    document.cookie = 'pb_auth=; Max-Age=0; path=/';
+    pb.authStore.clear(); // Clears localStorage
     setUser(null);
   };
+
 
   return (
     <AuthContext.Provider value={{ user, login, logout, loading, pb }}>
