@@ -16,6 +16,7 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_URL=https://api-grid.triunemyanmar.com
+        - VITE_PVWATTS_API_KEY=6N1hfczKMYBxC1UrmBKJ2PkF1AChgP6dfOpOwyx9
     container_name: web-map
     restart: unless-stopped
     ports:
