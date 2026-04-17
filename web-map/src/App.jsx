@@ -14,8 +14,16 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const MAP_STYLES = {
-  light: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
-  dark:  'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  light: {
+    version: 8,
+    sources: { base: { type: 'raster', tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap contributors' } },
+    layers: [{ id: 'base', type: 'raster', source: 'base' }]
+  },
+  dark: {
+    version: 8,
+    sources: { base: { type: 'raster', tiles: ['https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'], tileSize: 256, attribution: '© Esri' } },
+    layers: [{ id: 'base', type: 'raster', source: 'base' }]
+  },
 };
 
 const INITIAL_VIEW_STATE = {
