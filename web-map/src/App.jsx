@@ -1780,9 +1780,6 @@ export default function App() {
                 <h1>Myanmar Power Grid</h1>
                 <p>Interactive Infrastructure Map</p>
               </div>
-              <button className="icon-btn" onClick={logout} title="Sign Out" aria-label="Sign Out" style={{ marginLeft: 'auto', background: 'transparent' }}>
-                <LogOut size={16} color="#94a3b8" />
-              </button>
             </div>
 
             {/* Search */}
