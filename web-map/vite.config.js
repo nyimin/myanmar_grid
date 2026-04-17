@@ -39,5 +39,8 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    allowedHosts: ['grid.triunemyanmar.com'],
+  },
 })
 
