@@ -446,6 +446,46 @@ function MiniBarChart({ data, color }) {
   );
 }
 
+// ── Wind Rose Chart ─────────────────────────────────────────────────────────
+const WIND_DIRS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function WindRoseChart({ data, color }) {
+  if (!data?.length) return (
+    <div style={{fontSize:'0.7rem',color:'var(--text-muted)',padding:'4px 0'}}>No wind direction data</div>
+  );
+  const max = Math.max(...data) || 1;
+  const cx = 68, cy = 68, r = 48;
+  
+  const coords = data.map((val, i) => {
+    const angle = (i * 22.5 - 90) * (Math.PI / 180);
+    const rad = (val / max) * r;
+    return `${cx + rad * Math.cos(angle)},${cy + rad * Math.sin(angle)}`;
+  }).join(' ');
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '12px 0 4px' }}>
+      <svg width="136" height="136" viewBox="0 0 136 136" role="img" aria-label="Wind Rose Chart">
+        {[0.33, 0.66, 1].map(scale => (
+          <circle key={scale} cx={cx} cy={cy} r={r * scale} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+        ))}
+        <line x1={cx} y1={cy - r} x2={cx} y2={cy + r} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+        <line x1={cx - r} y1={cy} x2={cx + r} y2={cy} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+        
+        <text x={cx} y={cy - r - 4} textAnchor="middle" fill="#94a3b8" fontSize="9">N</text>
+        <text x={cx + r + 4} y={cy + 3} textAnchor="start" fill="#94a3b8" fontSize="9">E</text>
+        <text x={cx} y={cy + r + 10} textAnchor="middle" fill="#94a3b8" fontSize="9">S</text>
+        <text x={cx - r - 4} y={cy + 3} textAnchor="end" fill="#94a3b8" fontSize="9">W</text>
+
+        <polygon points={coords} fill={`${color}44`} stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+        <circle cx={cx} cy={cy} r="2" fill={color} />
+      </svg>
+      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+        Dominant: <strong style={{ color: '#fff' }}>{WIND_DIRS[data.indexOf(Math.max(...data))]}</strong> 
+        {' '}({Math.round(max * 100)}% of time)
+      </div>
+    </div>
+  );
+}
+
 // ── Capacity Factor proxy from mean wind speed (generic Class II/III power curve)
 function windCF(ws) {
   if (!ws || ws <= 0) return 0;
@@ -797,6 +837,12 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
               <div className="dash-section">
                 <div className="vsec-title">Monthly Wind Speed (m/s)</div>
                 <MiniBarChart key={`wind-${chartVersion}`} data={meteoData?.windMonthly} color="#a7f3d0" />
+              </div>
+            )}
+            {tech === 'wind' && meteoData?.windRose && (
+              <div className="dash-section">
+                <div className="vsec-title">Annual Wind Rose (100m)</div>
+                <WindRoseChart data={meteoData.windRose} color="#a7f3d0" />
               </div>
             )}
 
@@ -1242,8 +1288,8 @@ export default function App() {
     const lngGrid = [lng, lng,   lng,   lng+s, lng-s, lng+s, lng-s, lng+s, lng-s].join(',');
     const elevUrl = `/api/openmeteo/v1/elevation?latitude=${latGrid}&longitude=${lngGrid}`;
 
-    // ── Open-Meteo Archive: hourly wind_speed_100m for past year ─────────────
-    const windUrl = `/api/meteo-archive/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${fmt(startDate)}&end_date=${fmt(endDate)}&hourly=wind_speed_10m,wind_speed_100m&wind_speed_unit=ms&timezone=auto&timeformat=unixtime`;
+    // ── Open-Meteo Archive: hourly wind speed/direction for past year ────────
+    const windUrl = `/api/meteo-archive/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${fmt(startDate)}&end_date=${fmt(endDate)}&hourly=wind_speed_10m,wind_speed_100m,wind_direction_100m&wind_speed_unit=ms&timezone=auto&timeformat=unixtime`;
 
     Promise.all([
       fetch(pvwUrl).then(r => r.json()).catch(() => null),
@@ -1286,22 +1332,39 @@ export default function App() {
       } catch { /* elev api miss */ }
 
       // ── Wind from Open-Meteo Archive ──────────────────────────────────────
-      let ws100ann = null, windMonthly = null;
+      let ws100ann = null, windMonthly = null, windRose = null;
       try {
         const hourly = windArchive?.hourly;
         const times  = hourly?.time ?? [];
         const speeds = hourly?.wind_speed_100m ?? [];
+        const dirs   = hourly?.wind_direction_100m ?? [];
+        
         if (speeds.length > 0) {
           ws100ann = speeds.reduce((s, v) => s + v, 0) / speeds.length;
+          
           const monthAccum = Array.from({ length: 12 }, () => ({ sum: 0, count: 0 }));
+          const sectorCounts = Array(16).fill(0);
+          let validDirCount = 0;
+
           times.forEach((t, i) => {
             const mo = new Date(t * 1000).getMonth();
             if (!isNaN(mo) && speeds[i] != null) {
               monthAccum[mo].sum += speeds[i];
               monthAccum[mo].count++;
+              
+              if (dirs[i] != null) {
+                // Ensure 0-360 range, shift by half-sector (11.25) to center N, modulo 360, divide by 22.5
+                const sIdx = Math.floor(((dirs[i] + 11.25) % 360) / 22.5);
+                sectorCounts[sIdx]++;
+                validDirCount++;
+              }
             }
           });
+          
           windMonthly = monthAccum.map(m => m.count > 0 ? Math.round(m.sum / m.count * 100) / 100 : null);
+          if (validDirCount > 0) {
+            windRose = sectorCounts.map(c => c / validDirCount); // store as frequencies 0-1
+          }
         }
       } catch { /* wind api miss */ }
 
@@ -1324,7 +1387,7 @@ export default function App() {
         }
       } catch { /* turf error */ }
 
-      setMeteoData({ solarYield, solarMonthly, ws100: ws100ann, windMonthly, slopeMax, slopeAspect, roadDistKm });
+      setMeteoData({ solarYield, solarMonthly, ws100: ws100ann, windMonthly, windRose, slopeMax, slopeAspect, roadDistKm });
       setMeteoLoading(false);
       setAnalysisPhase('results');
     }).catch((err) => {
