@@ -1363,6 +1363,7 @@ function AnalysisPanel({
   measurePoints, measureMousePos, onMeasureUndo, onMeasureClear,
   meteoData, meteoLoading, viabilityResult,
   analysisPhase, viabilityPoint, viabilityConfig, onRunAnalysis, onReconfigure, onNewPin,
+  traceInfo, traceTab, setTraceTab,
   onJumpTo, onMobileBack,
 }) {
   const { type, data } = panelState;
@@ -2791,6 +2792,9 @@ export default function App() {
         onRunAnalysis={handleRunAnalysis}
         onReconfigure={handleReconfigure}
         onNewPin={handleNewPin}
+        traceInfo={traceInfo}
+        traceTab={traceTab}
+        setTraceTab={setTraceTab}
         geoData={geoData}
         onMobileBack={() => setSidebarCollapsed(false)}
         onJumpTo={(result) => {
