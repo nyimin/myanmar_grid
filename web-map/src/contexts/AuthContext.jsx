@@ -2,15 +2,27 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import PocketBase from 'pocketbase';
 
 const pb = new PocketBase(import.meta.env.VITE_API_URL);
+const MOCK_AUTH_ENABLED = import.meta.env.VITE_MOCK_AUTH === 'true';
+const MOCK_USER = {
+  id: 'mock-auth-user',
+  email: 'qa@local.test',
+  name: 'QA Mock User',
+};
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   // Initialize with the current auth store state right away
-  const [user, setUser] = useState(pb.authStore.isValid ? pb.authStore.model : null);
-  const [loading, setLoading] = useState(!pb.authStore.isValid);
+  const [user, setUser] = useState(MOCK_AUTH_ENABLED ? MOCK_USER : (pb.authStore.isValid ? pb.authStore.model : null));
+  const [loading, setLoading] = useState(MOCK_AUTH_ENABLED ? false : !pb.authStore.isValid);
 
   useEffect(() => {
+    if (MOCK_AUTH_ENABLED) {
+      setUser(MOCK_USER);
+      setLoading(false);
+      return undefined;
+    }
+
     let isMounted = true;
 
     const checkAuth = async () => {
@@ -45,12 +57,20 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async (email, password) => {
+    if (MOCK_AUTH_ENABLED) {
+      setUser({ ...MOCK_USER, email: email || MOCK_USER.email });
+      return { record: MOCK_USER, token: 'mock-auth-token' };
+    }
     const authData = await pb.collection('users').authWithPassword(email, password);
     // Token automatically saved to localStorage by PocketBase
     return authData;
   };
 
   const logout = () => {
+    if (MOCK_AUTH_ENABLED) {
+      setUser(MOCK_USER);
+      return;
+    }
     pb.authStore.clear(); // Clears localStorage
     setUser(null);
   };

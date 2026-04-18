@@ -76,6 +76,101 @@ function minVoltageForCapacity(capMW) {
   return 230;
 }
 
+function getDefaultSolarTilt(lat) {
+  const tilt = Math.abs(lat) - 5;
+  return Math.round(Math.max(10, Math.min(25, tilt)));
+}
+
+function getSolarLossPercent(mounting) {
+  return mounting === 'tracking' ? 16 : 18;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function roundTo(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function average(values) {
+  const valid = values.filter(v => Number.isFinite(v));
+  if (!valid.length) return null;
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+function stdDev(values) {
+  const avg = average(values);
+  const valid = values.filter(v => Number.isFinite(v));
+  if (avg === null || !valid.length) return null;
+  const variance = valid.reduce((sum, value) => sum + ((value - avg) ** 2), 0) / valid.length;
+  return Math.sqrt(variance);
+}
+
+function getRouteMultiplier(slopeMax, slopeStdDev = null, elevationRange = null) {
+  let multiplier = 1.2;
+  if (slopeMax === null || slopeMax === undefined) multiplier = 1.35;
+  else if (slopeMax > 12) multiplier = 2.0;
+  else if (slopeMax > 5) multiplier = 1.5;
+
+  if (slopeStdDev !== null) {
+    if (slopeStdDev > 10) multiplier += 0.2;
+    else if (slopeStdDev > 6) multiplier += 0.1;
+  }
+  if (elevationRange !== null) {
+    if (elevationRange > 120) multiplier += 0.15;
+    else if (elevationRange > 60) multiplier += 0.05;
+  }
+  return roundTo(clamp(multiplier, 1.15, 2.35), 2);
+}
+
+function getRouteRiskLabel(routeMultiplier) {
+  if (routeMultiplier >= 2.0) return 'Steep terrain penalty';
+  if (routeMultiplier >= 1.5) return 'Rolling terrain penalty';
+  return 'Flat terrain penalty';
+}
+
+function getConfidenceMeta(score) {
+  if (score >= 80) return { label: 'High', icon: '🟢' };
+  if (score >= 55) return { label: 'Medium', icon: '🟡' };
+  return { label: 'Low', icon: '🟠' };
+}
+
+function getYearShiftedDate(date, yearsBack) {
+  const shifted = new Date(date);
+  shifted.setFullYear(shifted.getFullYear() - yearsBack);
+  return shifted;
+}
+
+function scoreDistanceBand(distanceKm, fullScoreDistance, zeroScoreDistance, maxPoints) {
+  if (!Number.isFinite(distanceKm)) return 0;
+  if (distanceKm <= fullScoreDistance) return maxPoints;
+  if (distanceKm >= zeroScoreDistance) return 0;
+  const ratio = 1 - ((distanceKm - fullScoreDistance) / (zeroScoreDistance - fullScoreDistance));
+  return clamp(ratio * maxPoints, 0, maxPoints);
+}
+
+function scoreSubstationCandidate(distanceKm, voltageKv, requiredVoltage) {
+  const distanceScore = scoreDistanceBand(distanceKm, 4, 40, 70);
+  const voltageGap = (voltageKv || 0) - requiredVoltage;
+  let voltageScore = 0;
+  if (!voltageKv) voltageScore = -15;
+  else if (voltageGap >= 0) voltageScore = clamp(28 - Math.abs(voltageGap) * 0.05, 12, 28);
+  else voltageScore = clamp(-18 + (voltageGap * 0.08), -35, -8);
+  return roundTo(distanceScore + voltageScore, 1);
+}
+
+function summariseWindWindows(windows) {
+  const valid = windows.filter(window => window?.cf !== null && window?.cf !== undefined);
+  return {
+    cf: roundTo(average(valid.map(window => window.cf)), 3),
+    wsHub: roundTo(average(valid.map(window => window.meanHubSpeed)), 2),
+    density: roundTo(average(valid.map(window => window.meanDensity)), 3),
+  };
+}
+
 // ── Grid Integration scoring (40 pts total) ────────────────────────────────
 function scoreGridIntegration(subDist, lineDist, subVoltage, capMW) {
   // Sub distance — 20 pts
@@ -110,7 +205,7 @@ function scoreGridIntegration(subDist, lineDist, subVoltage, capMW) {
 }
 
 // ── Resource Quality scoring (30 pts) ─────────────────────────────────────
-function scoreResource(tech, solarYield, ws100) {
+function scoreResource(tech, solarYield, windCfValue) {
   if (tech === 'solar') {
     if (!solarYield) return 0;
     if (solarYield >= 1700) return 30;
@@ -118,16 +213,16 @@ function scoreResource(tech, solarYield, ws100) {
     if (solarYield >= 1300) return 20 - ((1500 - solarYield) / 200) * 15;
     return 5;
   } else {
-    if (!ws100) return 0;
-    if (ws100 >= 8.0)  return 30;
-    if (ws100 >= 6.5)  return 30 - ((8.0 - ws100) / 1.5) * 10;
-    if (ws100 >= 5.0)  return 20 - ((6.5 - ws100) / 1.5) * 15;
+    if (!windCfValue) return 0;
+    if (windCfValue >= 0.35) return 30;
+    if (windCfValue >= 0.25) return 30 - ((0.35 - windCfValue) / 0.10) * 10;
+    if (windCfValue >= 0.15) return 20 - ((0.25 - windCfValue) / 0.10) * 15;
     return 5;
   }
 }
 
 // ── Site Feasibility scoring (30 pts) ─────────────────────────────────────
-function scoreSite(tech, slopeMax, roadDistKm) {
+function scoreSite(tech, slopeMax, roadDistKm, usableTerrainPct = null, slopeStdDev = null) {
   let slopeScore = 0;
   if (slopeMax === null) {
     slopeScore = 10; // unknown — neutral half score
@@ -145,7 +240,25 @@ function scoreSite(tech, slopeMax, roadDistKm) {
   else if (roadDistKm <= 2) roadScore = 10;
   else if (roadDistKm <= 10) roadScore = 10 - ((roadDistKm - 2) / 8) * 7;
   else roadScore = 3;
+  if (usableTerrainPct !== null) {
+    if (usableTerrainPct >= 80) slopeScore += 2;
+    else if (usableTerrainPct >= 65) slopeScore += 0;
+    else if (usableTerrainPct >= 50) slopeScore -= 1.5;
+    else if (usableTerrainPct >= 35) slopeScore -= 3;
+    else slopeScore -= 5;
+  }
+  if (slopeStdDev !== null) {
+    if (slopeStdDev > 10) slopeScore -= 4;
+    else if (slopeStdDev > 6) slopeScore -= 2;
+  }
+  slopeScore = clamp(slopeScore, 0, 20);
   return { slopeScore: Math.round(slopeScore), roadScore: Math.round(roadScore), total: Math.round(slopeScore + roadScore) };
+}
+
+function getDataStatusMeta(status) {
+  if (status === 'ok') return { label: 'Available', icon: 'OK' };
+  if (status === 'partial') return { label: 'Partial', icon: 'WARN' };
+  return { label: 'Unavailable', icon: 'MISS' };
 }
 
 // ── Grade from composite score ─────────────────────────────────────────────
@@ -509,17 +622,74 @@ function DiurnalChart({ data, color }) {
   );
 }
 
-// ── Capacity Factor proxy from mean wind speed (generic Class II/III power curve)
-function windCF(ws) {
-  if (!ws || ws <= 0) return 0;
-  if (ws >= 12) return 0.48;
-  if (ws >= 10) return 0.40;
-  if (ws >= 8.5) return 0.33;
-  if (ws >= 7.5) return 0.28;
-  if (ws >= 6.5) return 0.22;
-  if (ws >= 5.5) return 0.16;
-  if (ws >= 4.5) return 0.10;
-  return 0.05;
+// ── Generic wind turbine proxy ──────────────────────────────────────────────
+function getAirDensity(tempC = 25, elevationM = 0) {
+  const tempK = (tempC ?? 25) + 273.15;
+  const pressure = 101325 * ((1 - (2.25577e-5 * elevationM)) ** 5.25588);
+  return pressure / (287.05 * tempK);
+}
+
+function getDensitySpeedFactor(density) {
+  if (!density) return 1;
+  return Math.cbrt(density / 1.225);
+}
+
+function getGenericPowerCurveOutput(ws) {
+  if (!ws || ws < 3 || ws >= 25) return 0;
+  if (ws >= 12) return 1;
+  const cutIn = 3;
+  const rated = 12;
+  return clamp(((ws ** 3) - (cutIn ** 3)) / ((rated ** 3) - (cutIn ** 3)), 0, 1);
+}
+
+function computeWindSeriesMetrics({
+  times = [],
+  speeds100 = [],
+  temps = [],
+  alpha = 0.143,
+  hubHeight = 100,
+  elevationM = 0,
+  alphaDelta = 0,
+  tempOffsetC = 0,
+  netLossFactor = 0.88,
+}) {
+  const monthlyEnergyPerMW = Array(12).fill(0);
+  const monthlyHubSpeeds = Array.from({ length: 12 }, () => ({ sum: 0, count: 0 }));
+  const hubSpeeds = [];
+  const densities = [];
+  let totalEnergyPerMW = 0;
+  let validHours = 0;
+  const adjustedAlpha = clamp(alpha + alphaDelta, 0.06, 0.4);
+
+  times.forEach((t, i) => {
+    const v100 = speeds100[i];
+    if (!Number.isFinite(v100)) return;
+    const date = new Date(t * 1000);
+    const month = date.getMonth();
+    const density = getAirDensity((temps[i] ?? 25) + tempOffsetC, elevationM);
+    const vHub = v100 * Math.pow(hubHeight / 100, adjustedAlpha) * getDensitySpeedFactor(density);
+    const netOutput = getGenericPowerCurveOutput(vHub) * netLossFactor;
+
+    totalEnergyPerMW += netOutput;
+    validHours++;
+    densities.push(density);
+    hubSpeeds.push(vHub);
+
+    if (!Number.isNaN(month)) {
+      monthlyEnergyPerMW[month] += netOutput;
+      monthlyHubSpeeds[month].sum += vHub;
+      monthlyHubSpeeds[month].count++;
+    }
+  });
+
+  return {
+    cf: validHours ? totalEnergyPerMW / validHours : null,
+    monthlyEnergyPerMW: monthlyEnergyPerMW.map(value => roundTo(value, 1)),
+    monthlyHubSpeeds: monthlyHubSpeeds.map(entry => entry.count ? roundTo(entry.sum / entry.count, 2) : null),
+    meanHubSpeed: roundTo(average(hubSpeeds), 2),
+    meanDensity: roundTo(average(densities), 3),
+    validHours,
+  };
 }
 
 // ── Config Panel (Stage 1 of 2) ────────────────────────────────────────────
@@ -528,6 +698,8 @@ function ConfigPanel({ point, onRun, onCancel }) {
   const [capMW, setCapMW]   = useState(50);
   const [mounting, setMounting] = useState('fixed'); // 'fixed' | 'tracking'
   const [hubHeight, setHubHeight] = useState(100);
+  const defaultTilt = getDefaultSolarTilt(point.lat);
+  const defaultLosses = getSolarLossPercent(mounting);
 
   return (
     <div className="viability-root">
@@ -581,8 +753,11 @@ function ConfigPanel({ point, onRun, onCancel }) {
                 </button>
               ))}
             </div>
+            <div className="config-note">
+              <span>Default solar assumptions: {defaultTilt}° tilt and {defaultLosses}% total losses for indicative Year-1 yield.</span>
+            </div>
             {mounting === 'tracking' && (
-              <p className="panel-hint" style={{color:'#facc15',marginTop:4}}>⚡ Tracker adds ~15–20% yield vs fixed tilt — accounted in PVWatts fetch.</p>
+              <p className="panel-hint" style={{color:'#facc15',marginTop:4}}>⚡ Tracker yield uplift is modeled, but land use and interconnection remain screening-level assumptions.</p>
             )}
           </div>
         )}
@@ -603,7 +778,7 @@ function ConfigPanel({ point, onRun, onCancel }) {
               <div className="config-range-labels"><span>80 m</span><span>160 m</span></div>
             </div>
             <div className="config-note">
-              <span>Wind analysis computes a local Shear Exponent (α) from 10m/100m ERA5 data to extrapolate speeds to your custom hub height.</span>
+              <span>Wind analysis uses ERA5 screening data with local shear extrapolation and a trailing baseline correction layer.</span>
             </div>
           </>
         )}
@@ -624,7 +799,14 @@ function ConfigPanel({ point, onRun, onCancel }) {
           <button
             className={`config-run-btn ${tech ? 'config-run-btn--ready' : ''}`}
             disabled={!tech}
-            onClick={() => onRun({ tech, capMW, mounting, hubHeight })}>
+            onClick={() => onRun({
+              tech,
+              capMW,
+              mounting,
+              hubHeight,
+              solarTilt: defaultTilt,
+              solarLosses: defaultLosses,
+            })}>
             ▶ Run Analysis
           </button>
         </div>
@@ -635,7 +817,7 @@ function ConfigPanel({ point, onRun, onCancel }) {
 
 // ── Analysis Dashboard (Stage 2 of 2) ──────────────────────────────────────
 function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfigure, onNewPin }) {
-  const { tech, capMW, hubHeight = 100 } = config;
+  const { tech, capMW, hubHeight = 100, solarTilt = 15, solarLosses = 18 } = config;
 
   // ── Monthly chart state — Phase 5: moved out of useMemo to local state ──
   const [solarMonthlyDisplay, setSolarMonthlyDisplay] = useState(null);
@@ -651,65 +833,158 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
   }, [meteoData?.solarMonthly, capMW]);
 
   useEffect(() => {
-    if (meteoData?.windMonthly?.length) {
-      const shearMultiplier = Math.pow(hubHeight / 100, meteoData.alpha ?? 0.143);
-      const scaled = meteoData.windMonthly.map(m => {
-        if (!m) return 0;
-        const vHub = m * shearMultiplier;
-        return Math.round(capMW * 8760 / 12 * windCF(vHub) * 0.85 / 1000 * 10) / 10;
-      });
+    if (meteoData?.windMonthlyEnergyPerMW?.length) {
+      const scaled = meteoData.windMonthlyEnergyPerMW.map(v => v ? roundTo(v * capMW, 1) : 0);
       setWindMonthlyDisplay(scaled);
       setChartVersion(v => v + 1);
     }
-  }, [meteoData?.windMonthly, meteoData?.alpha, capMW, hubHeight]);
+  }, [meteoData?.windMonthlyEnergyPerMW, capMW]);
 
   // ── Derived values ────────────────────────────────────────────────────────
   const solarYield   = meteoData?.solarYield ?? null;
   const ws100        = meteoData?.ws100 ?? null;
   const alpha        = meteoData?.alpha ?? 0.143;
   const slopeMax     = meteoData?.slopeMax ?? null;
+  const slopeMean    = meteoData?.slopeMean ?? null;
+  const slopeStdDev  = meteoData?.slopeStdDev ?? null;
+  const terrainUsabilityPct = meteoData?.usableTerrainPct ?? null;
+  const elevationRange = meteoData?.elevationRange ?? null;
   const roadDistKm   = meteoData?.roadDistKm ?? null;
+  const routeMultiplier = getRouteMultiplier(slopeMax, slopeStdDev, elevationRange);
+  const routeLabel = getRouteRiskLabel(routeMultiplier);
+  const adjSubDist = result ? result.subDist * routeMultiplier : null;
+  const adjLineDist = result ? result.lineDist * routeMultiplier : null;
+  const adjRoadDistKm = roadDistKm !== null ? roadDistKm * routeMultiplier : null;
+  const dataStatus = meteoData?.dataStatus ?? {};
+  const dataStatusMeta = {
+    solar: getDataStatusMeta(dataStatus.solar || 'missing'),
+    terrain: getDataStatusMeta(dataStatus.terrain || 'missing'),
+    wind: getDataStatusMeta(dataStatus.wind || 'missing'),
+    roads: getDataStatusMeta(dataStatus.roads || 'missing'),
+  };
 
-  const shearMultiplier = Math.pow(hubHeight / 100, alpha);
-  const wsActual = ws100 ? ws100 * shearMultiplier : null;
-
-  const cf           = windCF(wsActual);
+  const wsActual      = meteoData?.wsHub ?? (ws100 ? roundTo(ws100 * Math.pow(hubHeight / 100, alpha), 2) : null);
+  const cf           = meteoData?.windCf ?? null;
+  const airDensity   = meteoData?.airDensity ?? null;
+  const tempMeanC    = meteoData?.tempMeanC ?? null;
+  const windBaseline = meteoData?.windBaseline ?? null;
+  const windCorrection = meteoData?.windCorrection ?? null;
   const solarGWhYr   = solarYield ? (capMW * 1000 * solarYield) / 1e6 : null;
-  const windGWhYr    = wsActual ? Math.round(capMW * 8760 * cf * 0.85 / 1000 * 10) / 10 : null;
+  const windGWhYr    = cf !== null ? roundTo(capMW * 8760 * cf / 1000, 1) : null;
   const solarLandHa  = Math.round(capMW * 1.5);
   const windLeaseHa  = Math.round(capMW * 25);
+  const solarSensitivity = solarGWhYr ? {
+    low: roundTo(solarGWhYr * ((100 - Math.min(24, solarLosses + 2)) / (100 - solarLosses)), 1),
+    base: roundTo(solarGWhYr, 1),
+    high: roundTo(solarGWhYr * ((100 - Math.max(12, solarLosses - 2)) / (100 - solarLosses)), 1),
+  } : null;
+  const windSensitivity = meteoData?.windSensitivity ? {
+    low: roundTo(capMW * 8760 * meteoData.windSensitivity.low.cf / 1000, 1),
+    base: roundTo(windGWhYr, 1),
+    high: roundTo(capMW * 8760 * meteoData.windSensitivity.high.cf / 1000, 1),
+  } : null;
+  const routeSensitivity = result ? {
+    lowSub: roundTo(result.subDist * Math.max(1.05, routeMultiplier - 0.15), 1),
+    baseSub: roundTo(adjSubDist ?? result.subDist, 1),
+    highSub: roundTo(result.subDist * Math.min(2.6, routeMultiplier + 0.25), 1),
+  } : null;
 
   // ── Score modules ─────────────────────────────────────────────────────────
-  const resourceScore = result ? Math.round(scoreResource(tech, solarYield, tech === 'wind' ? wsActual : ws100)) : 0;
-  const gridScores    = result ? scoreGridIntegration(result.subDist, result.lineDist, result.subVoltage, capMW) : null;
-  const siteScores    = result ? scoreSite(tech, slopeMax, roadDistKm) : null;
+  const resourceScore = result ? Math.round(scoreResource(tech, solarYield, tech === 'wind' ? cf : null)) : 0;
+  const gridScores    = result ? scoreGridIntegration(adjSubDist ?? result.subDist, adjLineDist ?? result.lineDist, result.subVoltage, capMW) : null;
+  const siteScores    = result ? scoreSite(tech, slopeMax, adjRoadDistKm ?? roadDistKm, terrainUsabilityPct, slopeStdDev) : null;
   const composite     = Math.round(gridScores && siteScores ? resourceScore + gridScores.total + siteScores.total : 0);
   const grade         = getGrade(composite);
+
+  const resourceConfidenceScore = (() => {
+    if (tech === 'solar') {
+      let score = solarYield ? 82 : 30;
+      if (solarYield && (solarTilt < 10 || solarTilt > 25)) score -= 10;
+      return Math.max(15, Math.min(95, Math.round(score)));
+    }
+    let score = ws100 ? 58 : 20;
+    if (meteoData?.alpha != null) score += 4;
+    if (cf !== null) score += 6;
+    if (tempMeanC !== null) score += 3;
+    if (windBaseline?.baselineCf != null) score += 10;
+    if (windBaseline?.divergencePct != null && Math.abs(windBaseline.divergencePct) > 12) score -= 8;
+    if (ws100 && Math.abs((meteoData?.alpha ?? 0.143) - 0.143) > 0.08) score -= 6;
+    return Math.max(15, Math.min(80, Math.round(score)));
+  })();
+  const gridConfidenceScore = (() => {
+    let score = result ? 72 : 20;
+    if (result?.usedFallbackSub) score -= 22;
+    if (result?.usedFallbackLine) score -= 12;
+    if (!result?.subVoltage) score -= 15;
+    if ((result?.subCandidates?.length || 0) >= 2) score += 4;
+    if (routeMultiplier >= 2.0) score -= 10;
+    return Math.max(15, Math.min(90, Math.round(score)));
+  })();
+  const siteConfidenceScore = (() => {
+    let score = 70;
+    if (slopeMax === null) score -= 25;
+    if (roadDistKm === null) score -= 15;
+    if (terrainUsabilityPct !== null && terrainUsabilityPct < 55) score -= 10;
+    if (slopeStdDev !== null && slopeStdDev > 8) score -= 8;
+    if (routeMultiplier >= 2.0) score -= 10;
+    return Math.max(15, Math.min(90, Math.round(score)));
+  })();
+  const overallConfidenceScore = Math.round((resourceConfidenceScore + gridConfidenceScore + siteConfidenceScore) / 3);
+  const overallConfidence = getConfidenceMeta(overallConfidenceScore);
+  const moduleConfidence = {
+    resource: { ...getConfidenceMeta(resourceConfidenceScore), score: resourceConfidenceScore },
+    grid: { ...getConfidenceMeta(gridConfidenceScore), score: gridConfidenceScore },
+    site: { ...getConfidenceMeta(siteConfidenceScore), score: siteConfidenceScore },
+  };
 
   // ── Flags ─────────────────────────────────────────────────────────────────
   const flags = [];
   if (result) {
     const minV = minVoltageForCapacity(capMW);
-    if (result.subDist > 20)       flags.push({ type: 'red',    text: `Nearest substation ${result.subDist.toFixed(1)} km — high interconnection capex` });
-    else if (result.subDist > 15)  flags.push({ type: 'yellow', text: `Grid distance ${result.subDist.toFixed(1)} km — line upgrades likely needed` });
+    if ((adjSubDist ?? result.subDist) > 20)       flags.push({ type: 'red',    text: `Indicative substation route ${(adjSubDist ?? result.subDist).toFixed(1)} km — high interconnection capex` });
+    else if ((adjSubDist ?? result.subDist) > 15)  flags.push({ type: 'yellow', text: `Indicative grid route ${(adjSubDist ?? result.subDist).toFixed(1)} km — line upgrades likely needed` });
     if (result.subVoltage && result.subVoltage < minV)
                                    flags.push({ type: 'yellow', text: `Nearest sub ${result.subVoltage} kV — below ${minV} kV minimum for ${capMW} MW` });
+    if (result.usedFallbackSub || result.usedFallbackLine)
+                                   flags.push({ type: 'yellow', text: `Nearest eligible grid asset not found nearby — scorer fell back to lower-voltage infrastructure` });
+    if (routeMultiplier > 1.2)
+                                   flags.push({ type: routeMultiplier >= 2 ? 'red' : 'yellow', text: `${routeLabel} applied (${routeMultiplier.toFixed(2)}×) to grid and road distances` });
     if (slopeMax !== null) {
       const slopeLimit = tech === 'wind' ? 20 : 12;
       if (slopeMax > slopeLimit)   flags.push({ type: 'red',    text: `Slope ${slopeMax}% — exceeds ${slopeLimit}% earthworks threshold` });
       else if (slopeMax <= 5)      flags.push({ type: 'green',  text: `Slope ${slopeMax}% — excellent, minimal earthworks` });
       else                         flags.push({ type: 'yellow', text: `Slope ${slopeMax}% — manageable but review terrain` });
     }
+    if (terrainUsabilityPct !== null && terrainUsabilityPct < 60)
+                                   flags.push({ type: terrainUsabilityPct < 35 ? 'red' : 'yellow', text: `Usable terrain ${terrainUsabilityPct}% — grading and layout flexibility may be constrained` });
+    else if (terrainUsabilityPct !== null && terrainUsabilityPct < 75)
+                                   flags.push({ type: 'yellow', text: `Usable terrain ${terrainUsabilityPct}% — rolling terrain remains workable but will raise civil cost` });
     if (tech === 'solar' && solarYield) {
       if (solarYield >= 1700)      flags.push({ type: 'green',  text: `Solar yield ${Math.round(solarYield).toLocaleString()} kWh/kWp/yr — Class I (Excellent)` });
       else if (solarYield >= 1500) flags.push({ type: 'yellow', text: `Solar yield ${Math.round(solarYield).toLocaleString()} kWh/kWp/yr — Class II (Good)` });
       else                         flags.push({ type: 'red',    text: `Solar yield ${Math.round(solarYield).toLocaleString()} kWh/kWp/yr — marginal resource` });
+      flags.push({ type: 'yellow', text: `Solar defaults: ${solarTilt}° tilt and ${solarLosses}% total losses for Year-1 indicative yield` });
     }
     if (tech === 'wind' && wsActual) {
       if (wsActual >= 7.0)            flags.push({ type: 'green',  text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — viable resource` });
       else if (wsActual >= 5.5)       flags.push({ type: 'yellow', text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — marginal, check micro-siting` });
       else                         flags.push({ type: 'red',    text: `Wind ${wsActual.toFixed(1)} m/s @ ${hubHeight}m — below commercial threshold` });
+      if (windBaseline?.divergencePct != null) {
+        const divergenceAbs = Math.abs(windBaseline.divergencePct);
+        if (divergenceAbs > 12) flags.push({ type: 'yellow', text: `Recent wind year differs from trailing baseline by ${divergenceAbs.toFixed(1)}% — long-term correction applied` });
+        else flags.push({ type: 'green', text: `Recent wind year is close to trailing baseline (${divergenceAbs.toFixed(1)}% variance)` });
+      }
+      if (airDensity !== null) flags.push({ type: 'yellow', text: `Air density correction applied using ${airDensity.toFixed(3)} kg/m³ and temperature proxy` });
+      flags.push({ type: 'yellow', text: `Wind confidence is constrained by ERA5 screening data, but the score now blends recent and trailing baseline windows` });
     }
+    if (dataStatus.solar !== 'ok' && tech === 'solar')
+                                   flags.push({ type: 'red', text: `Solar API data is ${dataStatus.solar === 'partial' ? 'partial' : 'unavailable'} — solar outputs are degraded` });
+    if (dataStatus.wind !== 'ok' && tech === 'wind')
+                                   flags.push({ type: 'red', text: `Wind API data is ${dataStatus.wind === 'partial' ? 'partial' : 'unavailable'} — wind outputs are degraded` });
+    if (dataStatus.terrain !== 'ok')
+                                   flags.push({ type: 'yellow', text: `Terrain data is ${dataStatus.terrain === 'partial' ? 'partial' : 'unavailable'} — route multiplier and site metrics may be conservative` });
+    if (dataStatus.roads !== 'ok')
+                                   flags.push({ type: 'yellow', text: `Road network proximity is ${dataStatus.roads === 'partial' ? 'partial' : 'unavailable'} — access scoring is using fallback assumptions` });
   }
 
   const flagColor = { red:'#ef4444', yellow:'#facc15', green:'#34d399' };
@@ -754,20 +1029,20 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
           <div className="viability-modal-left">
             {/* Overall grade */}
             <div className="dash-overall">
-              <div className="dash-grade-ring" style={{ borderColor: grade.color }}>
-                <span className="dash-grade-num" style={{ color: grade.color }}>{composite}</span>
-                <span className="dash-grade-denom">/100</span>
-              </div>
+                <div className="dash-grade-ring" style={{ borderColor: grade.color }}>
+                  <span className="dash-grade-num" style={{ color: grade.color }}>{composite}</span>
+                  <span className="dash-grade-denom">/100</span>
+                </div>
               <div>
                 <div className="dash-grade-label" style={{ color: grade.color }}>{grade.symbol} {grade.label}</div>
-                <div className="dash-grade-sub">Composite score across 3 modules</div>
+                <div className="dash-grade-sub">Indicative screening score · {overallConfidence.icon} {overallConfidence.label} confidence ({overallConfidenceScore}/100)</div>
               </div>
             </div>
 
             {/* Sub-scores detail */}
             {gridScores && (
               <div className="dash-section">
-                <div className="vsec-title">Grid Integration Breakdown</div>
+                <div className="vsec-title">Indicative Grid Integration Breakdown</div>
                 {[
                   { label:'Sub Distance', score: Math.round(gridScores.subScore),  max:20, color:'#60a5fa' },
                   { label:'Line Distance',score: Math.round(gridScores.lineScore), max:10, color:'#a78bfa' },
@@ -809,16 +1084,32 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
               <div className="dash-section" style={{ borderBottom: 'none' }}>
                 <div className="vsec-title">Grid Infrastructure</div>
                 <div className="detail-row">
-                  <span className="detail-label">Nearest Substation</span>
-                  <span className="detail-value" style={{ color:'#60a5fa' }}>{result.subName || 'Unknown'} — {result.subDist.toFixed(1)} km</span>
+                  <span className="detail-label">Preferred Substation</span>
+                  <span className="detail-value" style={{ color:'#60a5fa' }}>{result.subName || 'Unknown'} — {result.subDist.toFixed(1)} km straight / {(adjSubDist ?? result.subDist).toFixed(1)} km indicative route</span>
                 </div>
                 <div className="detail-row">
                   <span className="detail-label">Substation Voltage</span>
                   <span className="detail-value">{result.subVoltage ? `${result.subVoltage} kV` : '?'}</span>
                 </div>
+                {result.subCandidates?.[0] && (
+                  <div className="detail-row">
+                    <span className="detail-label">Candidate Score</span>
+                    <span className="detail-value">{result.subCandidates[0].score.toFixed(1)} / 100 screening fit</span>
+                  </div>
+                )}
+                {result.subCandidates?.length > 1 && (
+                  <div className="detail-row">
+                    <span className="detail-label">Alt Candidates</span>
+                    <span className="detail-value">{result.subCandidates.slice(1).map(c => `${c.name} (${c.dist.toFixed(1)} km, ${c.voltage || '?'} kV)`).join(' · ')}</span>
+                  </div>
+                )}
                 <div className="detail-row">
                   <span className="detail-label">Nearest Line</span>
-                  <span className="detail-value" style={{ color:'#a78bfa' }}>{result.lineDist.toFixed(1)} km @ {result.lineVoltage ? `${result.lineVoltage} kV` : '? kV'}</span>
+                  <span className="detail-value" style={{ color:'#a78bfa' }}>{result.lineDist.toFixed(1)} km straight / {(adjLineDist ?? result.lineDist).toFixed(1)} km indicative route @ {result.lineVoltage ? `${result.lineVoltage} kV` : '? kV'}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Routing Heuristic</span>
+                  <span className="detail-value">{routeLabel} ({routeMultiplier.toFixed(2)}×)</span>
                 </div>
               </div>
             )}
@@ -828,15 +1119,15 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
             {/* Module cards */}
             <div className="dash-modules">
               {[
-                { label:'Resource Quality',  score: resourceScore, max:30, color:'#facc15',  confidence:'High',   icon: tech==='solar'?'☀️':'🌬️' },
-                { label:'Grid Integration', score: gridScores ? Math.round(gridScores.total) : 0, max:40, color:'#60a5fa', confidence:'Medium', icon:'⚡' },
-                { label:'Site Feasibility', score: siteScores ? Math.round(siteScores.total) : 0, max:30, color:'#34d399', confidence:'Medium', icon:'⛰️' },
+                { label:'Resource Quality',  score: resourceScore, max:30, color:'#facc15',  confidence: moduleConfidence.resource, icon: tech==='solar'?'☀️':'🌬️' },
+                { label:'Grid Integration', score: gridScores ? Math.round(gridScores.total) : 0, max:40, color:'#60a5fa', confidence: moduleConfidence.grid, icon:'⚡' },
+                { label:'Site Feasibility', score: siteScores ? Math.round(siteScores.total) : 0, max:30, color:'#34d399', confidence: moduleConfidence.site, icon:'⛰️' },
               ].map(m => (
                 <div key={m.label} className="dash-module-card">
                   <div className="dash-module-top">
                     <span className="dash-module-icon">{m.icon}</span>
                     <span className="dash-module-label">{m.label}</span>
-                    <span className="dash-confidence" title={`Confidence: ${m.confidence}`}>{m.confidence === 'High' ? '🟢' : '🟡'}</span>
+                    <span className="dash-confidence" title={`Confidence: ${m.confidence.label} (${m.confidence.score}/100)`}>{m.confidence.icon} {m.confidence.label}</span>
                   </div>
                   <div className="dash-module-score" style={{ color: m.color }}>{m.score}<span className="dash-module-max">/{m.max}</span></div>
                   <div className="dash-module-bar-track">
@@ -848,28 +1139,98 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
 
             {/* Key Metrics */}
             <div className="dash-section">
-              <div className="vsec-title">Key Metrics</div>
+              <div className="vsec-title">Indicative Key Metrics</div>
               <div className="dash-metrics-grid">
                 {tech === 'solar' && solarGWhYr && (
-                  <><div className="dash-metric"><span className="dash-metric-val" style={{color:'#facc15'}}>{solarGWhYr.toFixed(1)}</span><span className="dash-metric-label">GWh/yr</span></div>
+                  <><div className="dash-metric"><span className="dash-metric-val" style={{color:'#facc15'}}>{solarGWhYr.toFixed(1)}</span><span className="dash-metric-label">Indicative Year-1 GWh</span></div>
                   <div className="dash-metric"><span className="dash-metric-val">{Math.round(solarYield).toLocaleString()}</span><span className="dash-metric-label">kWh/kWp/yr</span></div>
                   <div className="dash-metric"><span className="dash-metric-val">{solarLandHa}</span><span className="dash-metric-label">ha land</span></div>
                   </>
                 )}
                 {tech === 'wind' && windGWhYr && (
-                  <><div className="dash-metric"><span className="dash-metric-val" style={{color:'#a7f3d0'}}>{windGWhYr}</span><span className="dash-metric-label">GWh/yr</span></div>
-                  <div className="dash-metric"><span className="dash-metric-val">{Math.round(cf*100)}%</span><span className="dash-metric-label">Cap. Factor</span></div>
+                  <><div className="dash-metric"><span className="dash-metric-val" style={{color:'#a7f3d0'}}>{windGWhYr}</span><span className="dash-metric-label">Indicative Year-1 GWh</span></div>
+                  <div className="dash-metric"><span className="dash-metric-val">{Math.round(cf*100)}%</span><span className="dash-metric-label">Indicative CF</span></div>
                   <div className="dash-metric"><span className="dash-metric-val">{windLeaseHa}</span><span className="dash-metric-label">ha lease</span></div>
                   </>
                 )}
+                {tech === 'wind' && windBaseline?.baselineCf != null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{Math.round(windBaseline.baselineCf * 100)}%</span><span className="dash-metric-label">baseline CF</span></div>
+                )}
+                {tech === 'wind' && windBaseline?.divergencePct != null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{windBaseline.divergencePct > 0 ? '+' : ''}{windBaseline.divergencePct.toFixed(1)}%</span><span className="dash-metric-label">recent vs baseline</span></div>
+                )}
                 {roadDistKm !== null && (
-                  <div className="dash-metric"><span className="dash-metric-val">{roadDistKm}</span><span className="dash-metric-label">km road</span></div>
+                  <div className="dash-metric"><span className="dash-metric-val">{(adjRoadDistKm ?? roadDistKm).toFixed(1)}</span><span className="dash-metric-label">Indicative road km</span></div>
                 )}
                 {slopeMax !== null && (
                   <div className="dash-metric"><span className="dash-metric-val" style={{color: slopeMax > (tech==='wind'?20:12) ? '#ef4444':'#34d399'}}>{slopeMax}%</span><span className="dash-metric-label">max slope</span></div>
                 )}
+                {slopeMean !== null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{slopeMean.toFixed(1)}%</span><span className="dash-metric-label">mean slope</span></div>
+                )}
+                {terrainUsabilityPct !== null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{terrainUsabilityPct}%</span><span className="dash-metric-label">usable terrain</span></div>
+                )}
+                {slopeStdDev !== null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{slopeStdDev.toFixed(1)}%</span><span className="dash-metric-label">slope std dev</span></div>
+                )}
+                {elevationRange !== null && (
+                  <div className="dash-metric"><span className="dash-metric-val">{elevationRange.toFixed(0)} m</span><span className="dash-metric-label">elevation range</span></div>
+                )}
+                {tempMeanC !== null && tech === 'wind' && (
+                  <div className="dash-metric"><span className="dash-metric-val">{tempMeanC.toFixed(1)}°C</span><span className="dash-metric-label">mean temp</span></div>
+                )}
               </div>
             </div>
+
+            <div className="dash-section">
+              <div className="vsec-title">Data Availability</div>
+              <div style={{ display:'grid', gap:10 }}>
+                {[
+                  ['Solar', dataStatusMeta.solar],
+                  ['Wind', dataStatusMeta.wind],
+                  ['Terrain', dataStatusMeta.terrain],
+                  ['Roads', dataStatusMeta.roads],
+                ].map(([label, meta]) => (
+                  <div key={label} className="detail-row">
+                    <span className="detail-label">{label}</span>
+                    <span className="detail-value">{meta.icon} {meta.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {(solarSensitivity || windSensitivity || routeSensitivity) && (
+              <div className="dash-section">
+                <div className="vsec-title">Sensitivity Ranges</div>
+                <div style={{ display:'grid', gap:10 }}>
+                  {tech === 'solar' && solarSensitivity && (
+                    <div className="detail-row">
+                      <span className="detail-label">Solar Yield</span>
+                      <span className="detail-value">{solarSensitivity.low.toFixed(1)} / {solarSensitivity.base.toFixed(1)} / {solarSensitivity.high.toFixed(1)} GWh (low/base/high loss cases)</span>
+                    </div>
+                  )}
+                  {tech === 'wind' && windSensitivity && (
+                    <div className="detail-row">
+                      <span className="detail-label">Wind Yield</span>
+                      <span className="detail-value">{windSensitivity.low.toFixed(1)} / {windSensitivity.base.toFixed(1)} / {windSensitivity.high.toFixed(1)} GWh (low/base/high shear-density cases)</span>
+                    </div>
+                  )}
+                  {tech === 'wind' && windBaseline?.baselineCf != null && (
+                    <div className="detail-row">
+                      <span className="detail-label">Wind Baseline</span>
+                      <span className="detail-value">{Math.round((windBaseline.recentCf ?? 0) * 100)}% recent CF blended with {Math.round(windBaseline.baselineCf * 100)}% trailing baseline CF using {Math.round((windCorrection?.blendWeight ?? 0) * 100)}% baseline weight</span>
+                    </div>
+                  )}
+                  {routeSensitivity && (
+                    <div className="detail-row">
+                      <span className="detail-label">Substation Route</span>
+                      <span className="detail-value">{routeSensitivity.lowSub.toFixed(1)} / {routeSensitivity.baseSub.toFixed(1)} / {routeSensitivity.highSub.toFixed(1)} km (low/base/high route case)</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Monthly chart */}
             {tech === 'solar' && solarMonthlyDisplay && (
@@ -880,8 +1241,8 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
             )}
             {tech === 'wind' && windMonthlyDisplay && (
               <div className="dash-section">
-                <div className="vsec-title">Monthly Wind Speed (m/s)</div>
-                <MiniBarChart key={`wind-${chartVersion}`} data={meteoData?.windMonthly} color="#a7f3d0" />
+                <div className="vsec-title">Monthly Indicative Generation (MWh)</div>
+                <MiniBarChart key={`wind-${chartVersion}`} data={windMonthlyDisplay} color="#a7f3d0" />
               </div>
             )}
             {tech === 'wind' && meteoData?.windRose && (
@@ -902,7 +1263,7 @@ function AnalysisDashboard({ result, meteoData, meteoLoading, config, onReconfig
 
             <div style={{ flex: 1 }} />
             <p className="panel-hint" style={{margin:'16px 16px 12px', borderTop: '1px solid var(--border-subtle)', paddingTop: '12px'}}>
-              Scores derived from PVGIS/ERA5 meteorological data, MIMU road network, and local GeoJSON grid data. For indicative purposes only.
+              Indicative outputs derived from PVWatts, ERA5/Open-Meteo, a generic turbine power curve, terrain statistics, MIMU roads, and local GeoJSON grid data. When upstream data is partial, the dashboard now surfaces degraded-data status instead of silently failing.
             </p>
           </div>
         </div>
@@ -1262,40 +1623,8 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // TODO / KNOWN ISSUE — Viability Meteo Fetch Race Condition
-  //
-  // Symptom: Monthly bar charts (PV & Wind) in ViabilityContent fail to render
-  // even though meteoData contains valid solarMonthly (Array[12]) and
-  // windMonthly (Array[12]) — confirmed via console logs:
-  //   [meteo] solarYield: 1493 | solarMonthly: Array(12) | ws100: 4.45 | windMonthly: Array(12)
-  //
-  // The data arrives correctly. MiniBarChart receives non-null arrays with
-  // positive values. Yet the bars never render — the chart returns null
-  // silently despite hasData=true and max>0 in the component.
-  //
-  // Suspected causes (not yet confirmed):
-  //   a) React render cycle mismatch — ViabilityContent re-renders before
-  //      setMeteoData completes, reading stale undefined values
-  //   b) useMemo dependency chain — solarMonthlyScaled/windMonthlyScaled are
-  //      computed from meteoData but may not trigger re-render correctly
-  //   c) CSS / flexbox overflow — .mini-bar-chart container may be clipping
-  //      or have zero height in the viability panel scroll context
-  //   d) Promise.all race — earlier fetch for a different location resolves
-  //      AFTER a later fetch, overwriting valid data with stale nulls
-  //   e) Vite proxy timing — concurrent proxy requests may interfere
-  //
-  // Workaround applied so far:
-  //   - Click debounce: meteoLoading guard in handleMapClick prevents
-  //     re-entrant fetches during pending requests
-  //   - cancelled flag in useEffect to skip stale closures
-  //   - Explicit null guard on meteoData.windMonthly in JSX
-  //
-  // Remaining action: add fetch-id monotonic counter to discard out-of-order
-  // responses, or move meteo fetch to a useReducer with action queue to
-  // guarantee sequential state updates. Also inspect panel CSS for overflow
-  // and height constraints on .mini-bar-chart.
-  // ─────────────────────────────────────────────────────────────────────────────
+  // Results charts are driven from local component state so reruns remount
+  // cleanly after each meteo fetch and avoid stale-array rendering glitches.
   // ── Analysis run (fired from ConfigPanel "Run Analysis" button) ─────────────
   const handleRunAnalysis = useCallback((config) => {
     setViabilityConfig(config);
@@ -1322,7 +1651,7 @@ export default function App() {
   useEffect(() => {
     if (analysisPhase !== 'analyzing' || !viabilityPoint || !viabilityConfig) return;
     const { lat, lng } = viabilityPoint;
-    const { mounting } = viabilityConfig;
+    const { mounting, tech, hubHeight = 100, solarTilt = 15, solarLosses = 18 } = viabilityConfig;
     let cancelled = false;
 
     // Date range: trailing 12 months, offset by 7 days to account for ERA5 lag
@@ -1334,71 +1663,129 @@ export default function App() {
 
     // ── PVWatts — array_type=2 for single-axis tracking, 0 for fixed ────────
     const arrayType = mounting === 'tracking' ? 2 : 0;
-    const pvwUrl = `/api/pvwatts/v8.json?api_key=${import.meta.env.VITE_PVWATTS_API_KEY}&lat=${lat}&lon=${lng}&system_capacity=1&module_type=0&losses=14&array_type=${arrayType}&tilt=15&azimuth=180&dataset=nsrdb&radius=100`;
+    const pvwUrl = `/api/pvwatts/v8.json?api_key=${import.meta.env.VITE_PVWATTS_API_KEY}&lat=${lat}&lon=${lng}&system_capacity=1&module_type=0&losses=${solarLosses}&array_type=${arrayType}&tilt=${solarTilt}&azimuth=180&dataset=nsrdb&radius=100`;
 
-    // ── Open-Meteo: 3×3 grid elevation (9 points, spacing 0.001°≈110m) ─────
+    // ── Open-Meteo: 5×5 grid elevation (25 points, spacing 0.001°≈110m) ────
     const s = 0.001;
-    const latGrid = [lat, lat+s, lat-s, lat,   lat,   lat+s, lat+s, lat-s, lat-s].join(',');
-    const lngGrid = [lng, lng,   lng,   lng+s, lng-s, lng+s, lng-s, lng+s, lng-s].join(',');
+    const offsets = [-2, -1, 0, 1, 2];
+    const terrainPoints = [];
+    offsets.forEach(latOffset => {
+      offsets.forEach(lngOffset => {
+        terrainPoints.push({ lat: lat + (latOffset * s), lng: lng + (lngOffset * s) });
+      });
+    });
+    const latGrid = terrainPoints.map(point => point.lat).join(',');
+    const lngGrid = terrainPoints.map(point => point.lng).join(',');
     const elevUrl = `/api/openmeteo/v1/elevation?latitude=${latGrid}&longitude=${lngGrid}`;
 
-    // ── Open-Meteo Archive: hourly wind speed/direction for past year ────────
-    const windUrl = `/api/meteo-archive/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${fmt(startDate)}&end_date=${fmt(endDate)}&hourly=wind_speed_10m,wind_speed_100m,wind_direction_100m&wind_speed_unit=ms&timezone=auto&timeformat=unixtime`;
+    // ── Open-Meteo Archive: recent year + trailing baseline windows ──────────
+    const buildWindUrl = (start, end) => `/api/meteo-archive/v1/archive?latitude=${lat}&longitude=${lng}&start_date=${fmt(start)}&end_date=${fmt(end)}&hourly=wind_speed_10m,wind_speed_100m,wind_direction_100m,temperature_2m&wind_speed_unit=ms&timezone=auto&timeformat=unixtime`;
+    const windWindows = [
+      { key: 'recent', start: startDate, end: endDate, yearsBack: 0 },
+      { key: 'baseline_1', start: getYearShiftedDate(startDate, 1), end: getYearShiftedDate(endDate, 1), yearsBack: 1 },
+      { key: 'baseline_2', start: getYearShiftedDate(startDate, 2), end: getYearShiftedDate(endDate, 2), yearsBack: 2 },
+      { key: 'baseline_3', start: getYearShiftedDate(startDate, 3), end: getYearShiftedDate(endDate, 3), yearsBack: 3 },
+    ];
 
     Promise.all([
       fetch(pvwUrl).then(r => r.json()).catch(() => null),
       fetch(elevUrl).then(r => r.json()).catch(() => null),
-      fetch(windUrl).then(r => r.json()).catch(() => null),
-    ]).then(([pvwatts, elev, windArchive]) => {
+      Promise.all(windWindows.map(window =>
+        fetch(buildWindUrl(window.start, window.end))
+          .then(r => r.json())
+          .catch(() => null)
+      )),
+    ]).then(([pvwatts, elev, windArchives]) => {
       if (cancelled) return;
+      const dataStatus = {
+        solar: 'missing',
+        terrain: 'missing',
+        wind: 'missing',
+        roads: geoData.roads?.features?.length ? 'ok' : 'missing',
+      };
 
       // ── Solar from PVWatts V8 ──────────────────────────────────────────────
       let solarYield = null, solarMonthly = null;
       try {
         solarYield   = pvwatts?.outputs?.ac_annual ?? null;
         solarMonthly = pvwatts?.outputs?.ac_monthly ?? null;
+        if (solarYield !== null || solarMonthly?.length) dataStatus.solar = 'ok';
       } catch (e) { console.error('PVWatts error', e); }
+      if (pvwatts && dataStatus.solar === 'missing') dataStatus.solar = 'partial';
 
-      // ── Slope from 3×3 elevation grid — max of 8 directional gradients ────
-      // Points: [0]=center, [1]=N, [2]=S, [3]=E, [4]=W, [5]=NE, [6]=NW, [7]=SE, [8]=SW
-      let slopeMax = null, slopeAspect = null;
+      // ── Terrain from 5×5 elevation grid — local slope distribution ─────────
+      let slopeMax = null, slopeMean = null, slopeStdDev = null, slopeAspect = null;
+      let usableTerrainPct = null, elevationRange = null, elevationMean = null;
       try {
         const elevs = elev?.elevation;
-        if (elevs?.length === 9) {
-          const [c, n, sv, e, w, ne, nw, se, sw] = elevs;
+        if (elevs?.length === 25) {
           const spacing = 110; // metres per 0.001°
-          const slopes = [
-            Math.abs(n  - c) / spacing,
-            Math.abs(sv - c) / spacing,
-            Math.abs(e  - c) / spacing,
-            Math.abs(w  - c) / spacing,
-            Math.abs(ne - c) / (spacing * Math.SQRT2),
-            Math.abs(nw - c) / (spacing * Math.SQRT2),
-            Math.abs(se - c) / (spacing * Math.SQRT2),
-            Math.abs(sw - c) / (spacing * Math.SQRT2),
-          ];
-          const maxIdx = slopes.indexOf(Math.max(...slopes));
-          slopeMax = Math.round(Math.max(...slopes) * 10000) / 100; // → %
-          // Rough aspect from dominant direction
-          const aspects = ['N','S','E','W','NE','NW','SE','SW'];
-          slopeAspect = aspects[maxIdx] ?? null;
+          const grid = Array.from({ length: 5 }, (_, row) => elevs.slice(row * 5, (row + 1) * 5));
+          const localSlopes = [];
+          let dominantAspect = null;
+          let dominantAspectSlope = -Infinity;
+          const slopeLimit = tech === 'wind' ? 20 : 12;
+          const aspects = {
+            '-1,0': 'N', '1,0': 'S', '0,1': 'E', '0,-1': 'W',
+            '-1,1': 'NE', '-1,-1': 'NW', '1,1': 'SE', '1,-1': 'SW',
+          };
+
+          for (let row = 0; row < 5; row++) {
+            for (let col = 0; col < 5; col++) {
+              const center = grid[row][col];
+              if (!Number.isFinite(center)) continue;
+              let localMax = 0;
+
+              for (let dRow = -1; dRow <= 1; dRow++) {
+                for (let dCol = -1; dCol <= 1; dCol++) {
+                  if (dRow === 0 && dCol === 0) continue;
+                  const nRow = row + dRow;
+                  const nCol = col + dCol;
+                  if (nRow < 0 || nRow >= 5 || nCol < 0 || nCol >= 5) continue;
+                  const neighbor = grid[nRow][nCol];
+                  if (!Number.isFinite(neighbor)) continue;
+
+                  const gradientPct = (Math.abs(neighbor - center) / (spacing * Math.hypot(dRow, dCol))) * 100;
+                  if (gradientPct > localMax) localMax = gradientPct;
+                  if (gradientPct > dominantAspectSlope) {
+                    dominantAspectSlope = gradientPct;
+                    dominantAspect = aspects[`${dRow},${dCol}`] ?? dominantAspect;
+                  }
+                }
+              }
+              localSlopes.push(localMax);
+            }
+          }
+
+          slopeMax = roundTo(Math.max(...localSlopes), 2);
+          slopeMean = roundTo(average(localSlopes), 2);
+          slopeStdDev = roundTo(stdDev(localSlopes), 2);
+          usableTerrainPct = roundTo((localSlopes.filter(value => value <= slopeLimit).length / localSlopes.length) * 100, 0);
+          elevationRange = roundTo(Math.max(...elevs) - Math.min(...elevs), 1);
+          elevationMean = roundTo(average(elevs), 1);
+          slopeAspect = dominantAspect;
+          dataStatus.terrain = 'ok';
         }
       } catch { /* elev api miss */ }
+      if (elev && dataStatus.terrain === 'missing') dataStatus.terrain = 'partial';
 
       // ── Wind from Open-Meteo Archive ──────────────────────────────────────
-      let ws100ann = null, windMonthly = null, windRose = null, alpha = 0.143, diurnal = null;
+      let ws100ann = null, wsHub = null, windMonthly = null, windMonthlyEnergyPerMW = null;
+      let windRose = null, alpha = 0.143, diurnal = null, tempMeanC = null, airDensity = null;
+      let windCf = null, windSensitivity = null, windBaseline = null, windCorrection = null;
       try {
-        const hourly = windArchive?.hourly;
+        const recentArchive = windArchives?.[0];
+        const hourly = recentArchive?.hourly;
         const times  = hourly?.time ?? [];
         const speeds100 = hourly?.wind_speed_100m ?? [];
         const speeds10  = hourly?.wind_speed_10m ?? [];
         const dirs   = hourly?.wind_direction_100m ?? [];
+        const temps  = hourly?.temperature_2m ?? [];
         
         if (speeds100.length > 0) {
           ws100ann = speeds100.reduce((s, v) => s + v, 0) / speeds100.length;
           
           const monthAccum = Array.from({ length: 12 }, () => ({ sum: 0, count: 0 }));
-          const hourAccum  = Array.from({ length: 24 }, () => ({ sum: 0, count: 0 }));
           const sectorCounts = Array(16).fill(0);
           let validDirCount = 0;
           let alphaSum = 0, alphaCount = 0;
@@ -1420,8 +1807,6 @@ export default function App() {
             if (!isNaN(mo) && v100 != null) {
               monthAccum[mo].sum += v100;
               monthAccum[mo].count++;
-              hourAccum[hr].sum += v100;
-              hourAccum[hr].count++;
               
               if (dirs[i] != null) {
                 // Ensure 0-360 range, shift by half-sector (11.25) to center N, modulo 360, divide by 22.5
@@ -1435,15 +1820,133 @@ export default function App() {
           if (alphaCount > 100) {
              alpha = Math.max(0.08, Math.min(0.35, alphaSum / alphaCount));
           }
-          
+
+          const terrainElevation = elevationMean ?? 0;
+          const recentWind = computeWindSeriesMetrics({
+            times,
+            speeds100,
+            temps,
+            alpha,
+            hubHeight,
+            elevationM: terrainElevation,
+          });
+          const lowWind = computeWindSeriesMetrics({
+            times,
+            speeds100,
+            temps,
+            alpha,
+            hubHeight,
+            elevationM: terrainElevation,
+            alphaDelta: -0.03,
+            tempOffsetC: 3,
+          });
+          const highWind = computeWindSeriesMetrics({
+            times,
+            speeds100,
+            temps,
+            alpha,
+            hubHeight,
+            elevationM: terrainElevation,
+            alphaDelta: 0.03,
+            tempOffsetC: -3,
+          });
+
+          const baselineWindows = (windArchives || []).slice(1).map((archive, index) => {
+            const archiveHourly = archive?.hourly;
+            if (!archiveHourly?.time?.length || !archiveHourly?.wind_speed_100m?.length) return null;
+            const archiveSpeeds100 = archiveHourly.wind_speed_100m ?? [];
+            const archiveSpeeds10 = archiveHourly.wind_speed_10m ?? [];
+            const archiveTemps = archiveHourly.temperature_2m ?? [];
+            let archiveAlpha = alpha;
+            let alphaSum = 0;
+            let alphaCount = 0;
+
+            archiveSpeeds100.forEach((v100, i) => {
+              const v10 = archiveSpeeds10[i];
+              if (v100 != null && v10 != null && v10 > 1.0 && v100 > v10) {
+                alphaSum += Math.log(v100 / v10) / Math.log(100 / 10);
+                alphaCount++;
+              }
+            });
+            if (alphaCount > 100) {
+              archiveAlpha = clamp(alphaSum / alphaCount, 0.08, 0.35);
+            }
+
+            const metrics = computeWindSeriesMetrics({
+              times: archiveHourly.time ?? [],
+              speeds100: archiveSpeeds100,
+              temps: archiveTemps,
+              alpha: archiveAlpha,
+              hubHeight,
+              elevationM: terrainElevation,
+            });
+            return metrics?.cf !== null ? {
+              key: windWindows[index + 1].key,
+              yearsBack: windWindows[index + 1].yearsBack,
+              cf: metrics.cf ? roundTo(metrics.cf, 3) : null,
+              meanHubSpeed: metrics.meanHubSpeed,
+              meanDensity: metrics.meanDensity,
+            } : null;
+          }).filter(Boolean);
+
+          const baselineSummary = summariseWindWindows(baselineWindows);
+          const blendWeight = baselineSummary.cf !== null ? 0.65 : 0;
+          const correctedCfRaw = baselineSummary.cf !== null
+            ? ((recentWind.cf ?? 0) * (1 - blendWeight)) + (baselineSummary.cf * blendWeight)
+            : recentWind.cf;
+          const correctedHubSpeedRaw = baselineSummary.wsHub !== null
+            ? ((recentWind.meanHubSpeed ?? 0) * (1 - blendWeight)) + (baselineSummary.wsHub * blendWeight)
+            : recentWind.meanHubSpeed;
+          const divergence = baselineSummary.cf !== null && recentWind.cf !== null
+            ? roundTo((((recentWind.cf - baselineSummary.cf) / baselineSummary.cf) * 100), 1)
+            : null;
+
           windMonthly = monthAccum.map(m => m.count > 0 ? Math.round(m.sum / m.count * 100) / 100 : null);
-          diurnal = hourAccum.map(h => h.count > 0 ? Math.round(h.sum / h.count * 100) / 100 : null);
+          tempMeanC = roundTo(average(temps), 1);
+          airDensity = recentWind.meanDensity;
+          wsHub = roundTo(correctedHubSpeedRaw, 2);
+          windCf = correctedCfRaw ? roundTo(correctedCfRaw, 3) : null;
+          windMonthlyEnergyPerMW = recentWind.monthlyEnergyPerMW?.map(value =>
+            correctedCfRaw && recentWind.cf ? roundTo(value * (correctedCfRaw / recentWind.cf), 1) : value
+          );
+          windSensitivity = {
+            low: { cf: lowWind.cf ? roundTo(lowWind.cf, 3) : null },
+            high: { cf: highWind.cf ? roundTo(highWind.cf, 3) : null },
+          };
+          windBaseline = {
+            recentCf: recentWind.cf ? roundTo(recentWind.cf, 3) : null,
+            baselineCf: baselineSummary.cf,
+            correctedCf: windCf,
+            recentHubSpeed: recentWind.meanHubSpeed,
+            baselineHubSpeed: baselineSummary.wsHub,
+            divergencePct: divergence,
+            windows: baselineWindows,
+          };
+          windCorrection = {
+            blendWeight: baselineSummary.cf !== null ? blendWeight : 0,
+            source: baselineSummary.cf !== null ? 'blended_recent_and_baseline' : 'recent_only',
+          };
+          dataStatus.wind = baselineWindows.length ? 'ok' : 'partial';
           
           if (validDirCount > 0) {
             windRose = sectorCounts.map(c => c / validDirCount); // store as frequencies 0-1
           }
+
+          const hourAccum = Array.from({ length: 24 }, () => ({ sum: 0, count: 0 }));
+          times.forEach((t, i) => {
+            const hr = new Date(t * 1000).getHours();
+            const v100 = speeds100[i];
+            const temp = temps[i];
+            if (!Number.isFinite(v100) || Number.isNaN(hr)) return;
+            const densityFactor = getDensitySpeedFactor(getAirDensity(temp ?? 25, terrainElevation));
+            const vHub = v100 * Math.pow(hubHeight / 100, alpha) * densityFactor;
+            hourAccum[hr].sum += vHub;
+            hourAccum[hr].count++;
+          });
+          diurnal = hourAccum.map(h => h.count > 0 ? roundTo(h.sum / h.count, 2) : null);
         }
       } catch { /* wind api miss */ }
+      if (windArchives?.[0] && dataStatus.wind === 'missing') dataStatus.wind = 'partial';
 
       // ── Road distance — query local MIMU GeoJSON via Turf.js ─────────────
       let roadDistKm = null;
@@ -1461,16 +1964,71 @@ export default function App() {
             } catch { /* invalid geom */ }
           });
           if (minDist < Infinity) roadDistKm = Math.round(minDist * 10) / 10;
+          else dataStatus.roads = 'partial';
         }
       } catch { /* turf error */ }
+      if (!geoData.roads?.features?.length) dataStatus.roads = 'missing';
 
-      setMeteoData({ solarYield, solarMonthly, ws100: ws100ann, windMonthly, windRose, diurnal, alpha, slopeMax, slopeAspect, roadDistKm });
+      setMeteoData({
+        solarYield,
+        solarMonthly,
+        ws100: roundTo(ws100ann, 2),
+        wsHub,
+        windCf,
+        windMonthly,
+        windMonthlyEnergyPerMW,
+        windRose,
+        diurnal,
+        alpha: roundTo(alpha, 3),
+        tempMeanC,
+        airDensity,
+        windSensitivity,
+        windBaseline,
+        windCorrection,
+        slopeMax,
+        slopeMean,
+        slopeStdDev,
+        slopeAspect,
+        usableTerrainPct,
+        elevationRange,
+        roadDistKm,
+        dataStatus,
+      });
       setMeteoLoading(false);
       setAnalysisPhase('results');
     }).catch((err) => {
       if (!cancelled) {
         console.error('[meteo] fetch error:', err);
-        setMeteoData(null);
+        setMeteoData({
+          solarYield: null,
+          solarMonthly: null,
+          ws100: null,
+          wsHub: null,
+          windCf: null,
+          windMonthly: null,
+          windMonthlyEnergyPerMW: null,
+          windRose: null,
+          diurnal: null,
+          alpha: null,
+          tempMeanC: null,
+          airDensity: null,
+          windSensitivity: null,
+          windBaseline: null,
+          windCorrection: null,
+          slopeMax: null,
+          slopeMean: null,
+          slopeStdDev: null,
+          slopeAspect: null,
+          usableTerrainPct: null,
+          elevationRange: null,
+          roadDistKm: null,
+          dataStatus: {
+            solar: 'missing',
+            wind: 'missing',
+            terrain: 'missing',
+            roads: geoData.roads?.features?.length ? 'partial' : 'missing',
+          },
+        });
         setMeteoLoading(false);
         setAnalysisPhase('results'); // show dashboard even on partial failure
       }
@@ -1654,50 +2212,84 @@ export default function App() {
 
   // ── Viability result — spatial query using Turf.js ─────────────────────────
   const viabilityResult = useMemo(() => {
-    if (!viabilityPoint || !geoData.substations || !geoData.lines) return null;
+    if (!viabilityPoint || !geoData.substations || !geoData.lines || !viabilityConfig) return null;
     const { lng, lat } = viabilityPoint;
     const pt = turf.point([lng, lat]);
+    const minV = minVoltageForCapacity(viabilityConfig.capMW);
 
-    // ── Nearest substation ────────────────────────────────────────────────────
+    // ── Preferred substation candidate ranking ───────────────────────────────
     let nearestSub = null, minSubDist = Infinity;
+    const subCandidates = [];
     (geoData.substations.features || []).forEach(f => {
       const coords = getPointCoords(f);
       if (coords) {
         const d = turf.distance(pt, turf.point(coords), { units: 'kilometers' });
         if (d < minSubDist) { minSubDist = d; nearestSub = f; }
+        subCandidates.push({
+          feature: f,
+          dist: d,
+          voltage: f.properties.voltage_kv || 0,
+          isEligible: (f.properties.voltage_kv || 0) >= minV,
+          score: scoreSubstationCandidate(d, f.properties.voltage_kv || 0, minV),
+        });
       }
     });
+    const rankedSubCandidates = subCandidates
+      .sort((a, b) => b.score - a.score || a.dist - b.dist)
+      .slice(0, 3);
+    const chosenSubCandidate = rankedSubCandidates[0] || null;
+    const chosenSub = chosenSubCandidate?.feature || nearestSub;
+    const chosenSubDist = chosenSubCandidate?.dist ?? minSubDist;
 
     // ── Nearest transmission line (vertex scan + Turf for accuracy) ───────────
     let nearestLine = null, minLineDist = Infinity, nearestLinePoint = null;
+    let nearestEligibleLine = null, minEligibleLineDist = Infinity, nearestEligibleLinePoint = null;
     (geoData.lines.features || []).forEach(f => {
       try {
         const d = turf.pointToLineDistance(pt, f, { units: 'kilometers' });
+        const coords = f.geometry.type === 'LineString' ? f.geometry.coordinates : f.geometry.coordinates.flat();
+        let minVertexDist = Infinity, nearestVtx = null;
+        coords.forEach(c => {
+          const dv = haversineKm(lat, lng, c[1], c[0]);
+          if (dv < minVertexDist) { minVertexDist = dv; nearestVtx = { lng: c[0], lat: c[1] }; }
+        });
         if (d < minLineDist) {
           minLineDist = d;
           nearestLine = f;
-          // Nearest vertex for the connector line on the map
-          const coords = f.geometry.type === 'LineString' ? f.geometry.coordinates : f.geometry.coordinates.flat();
-          let minV = Infinity, nearestVtx = null;
-          coords.forEach(c => {
-            const dv = haversineKm(lat, lng, c[1], c[0]);
-            if (dv < minV) { minV = dv; nearestVtx = { lng: c[0], lat: c[1] }; }
-          });
           nearestLinePoint = nearestVtx;
+        }
+        if ((f.properties.voltage_kv || 0) >= minV && d < minEligibleLineDist) {
+          minEligibleLineDist = d;
+          nearestEligibleLine = f;
+          nearestEligibleLinePoint = nearestVtx;
         }
       } catch { /* skip invalid geometry */ }
     });
+    const chosenLine = nearestEligibleLine || nearestLine;
+    const chosenLineDist = nearestEligibleLine ? minEligibleLineDist : minLineDist;
+    const chosenLinePoint = nearestEligibleLine ? nearestEligibleLinePoint : nearestLinePoint;
 
-    const subVoltage  = nearestSub  ? (nearestSub.properties.voltage_kv  || 0) : 0;
-    const lineVoltage = nearestLine ? (nearestLine.properties.voltage_kv || 0) : 0;
-    const subName     = nearestSub?.properties?.name || null;
+    const subVoltage  = chosenSub  ? (chosenSub.properties.voltage_kv  || 0) : 0;
+    const lineVoltage = chosenLine ? (chosenLine.properties.voltage_kv || 0) : 0;
+    const subName     = chosenSub?.properties?.name || null;
 
     return {
-      subDist: minSubDist, subName, subVoltage,
-      lineDist: minLineDist, lineVoltage, linePoint: nearestLinePoint,
+      subDist: chosenSubDist, subName, subVoltage,
+      lineDist: chosenLineDist, lineVoltage, linePoint: chosenLinePoint,
+      usedFallbackSub: !!chosenSubCandidate && !chosenSubCandidate.isEligible && !!nearestSub,
+      usedFallbackLine: !nearestEligibleLine && !!nearestLine,
+      requiredVoltage: minV,
+      subCandidates: rankedSubCandidates.map(candidate => ({
+        name: candidate.feature.properties.name || 'Unknown',
+        id: candidate.feature.properties.id,
+        voltage: candidate.voltage || null,
+        dist: roundTo(candidate.dist, 1),
+        score: candidate.score,
+        isEligible: candidate.isEligible,
+      })),
       targetPoint: { lng, lat },
     };
-  }, [viabilityPoint, geoData.substations, geoData.lines]);
+  }, [viabilityPoint, viabilityConfig, geoData.substations, geoData.lines]);
 
   // ── Map click handler ──────────────────────────────────────────────────────
   const handleMapClick = useCallback((info) => {

@@ -47,14 +47,16 @@ The flagship origination tool. Drop a pin anywhere on the map to get an instant 
 
 | Component | Weight | Logic |
 |---|---|---|
-| Distance to nearest substation | 50 pts | < 5 km = full marks; scaled to 0 pts at > 30 km |
-| Distance to nearest transmission line | 30 pts | < 2 km = full marks; scaled to 0 pts at > 25 km |
-| Voltage class of nearest infrastructure | 20 pts | 33–132 kV = 20 pts; 230 kV = 10 pts; 500 kV = 0 pts |
+| Distance to nearest substation | 50 pts | Uses terrain-adjusted indicative route distance, with preferred substation candidate ranking by voltage fit and distance |
+| Distance to nearest transmission line | 30 pts | Uses terrain-adjusted indicative route distance, with fallback if no eligible high-voltage asset exists |
+| Voltage class of nearest infrastructure | 20 pts | Capacity-based voltage screening with penalties for fallback to lower-voltage assets |
 
-**Live satellite data** is fetched automatically on each pin drop:
+**Live screening data** is fetched automatically on each pin drop:
 
-- ☀️ **Solar Yield (PVGIS)** — Annual specific yield in `kWh/kWp/yr` from the EU JRC PVGIS ERA5 dataset (2005–2020 climatology), with Solar Class rating (Excellent / Good / Marginal).
-- 🌬️ **Wind Speed (NASA POWER × Power Law)** — Annual mean wind speeds at **50 m**, **100 m**, and **150 m** hub heights. The 50 m reference is pulled from NASA MERRA-2 climatology via the NASA POWER API; 100 m and 150 m are extrapolated using the site-specific **Wind Profile Power Law** with a calculated shear exponent (α).
+- ☀️ **Solar Yield (PVWatts V8)** — Annual specific yield in `kWh/kWp/yr`, normalized to `1 kW`, with latitude-based tilt defaults and conservative regional losses for indicative Year-1 output.
+- 🌬️ **Wind Yield (Open-Meteo ERA5 × Generic Turbine Proxy)** — Recent-period hourly wind speeds at **10 m** and **100 m**, extrapolated to hub height, air-density corrected using temperature and elevation, then blended with trailing baseline windows before mapping to a generic power curve.
+- ⛰️ **Terrain Screen (Open-Meteo Elevation)** — A `5x5` elevation sample is used to estimate max slope, slope variability, elevation range, and usable terrain share.
+- 🧭 **Degraded-Data Awareness** — The dashboard now shows whether solar, wind, terrain, and road inputs are fully available, partial, or unavailable.
 
 ---
 
@@ -67,8 +69,9 @@ The flagship origination tool. Drop a pin anywhere on the map to get an instant 
 | Power Plants | Global Power Plant Database + MOEP tender records |
 | Hydro Dams | MOEP hydro portfolio |
 | Admin Boundaries | MIMU Myanmar Admin Level 1 |
-| Solar Irradiation | EU JRC PVGIS (ERA5, 2005–2020) |
-| Wind Climatology | NASA POWER API (MERRA-2, 2001–2020) |
+| Solar Irradiation | NREL PVWatts V8 |
+| Wind / Temperature | Open-Meteo ERA5 archive |
+| Terrain Elevation | Open-Meteo elevation API |
 
 All GeoJSON datasets are stored in `public/data/`.
 
@@ -83,8 +86,8 @@ All GeoJSON datasets are stored in `public/data/`.
 | GPU Rendering | Deck.gl 9 (`GeoJsonLayer`, `ScatterplotLayer`) |
 | Basemaps | Carto Positron / Dark Matter (free, no token required) |
 | Icons | Lucide React |
-| Solar API | EU JRC PVGIS REST API v5.2 |
-| Wind API | NASA POWER Climatology API v2.8 |
+| Solar API | NREL PVWatts V8 |
+| Wind / Terrain API | Open-Meteo Archive + Elevation |
 | Styling | Vanilla CSS (glassmorphism design system) |
 
 ---
@@ -110,7 +113,7 @@ npm run dev
 
 Open **http://localhost:5173** in your browser.
 
-> **Note:** The dev server runs Vite proxy routes for `/api/pvgis` → PVGIS and `/api/nasa` → NASA POWER. This bypasses browser CORS restrictions without any third-party proxy service.
+> **Note:** The dev server runs Vite proxy routes for the upstream energy and weather APIs so the browser can call them without CORS issues.
 
 ### Build for Production
 
@@ -119,7 +122,7 @@ npm run build
 # Output is in dist/
 ```
 
-> For production deployment, configure your reverse proxy (nginx / Caddy) to forward `/api/pvgis/*` to `https://re.jrc.ec.europa.eu/api/v5_2/*` and `/api/nasa/*` to `https://power.larc.nasa.gov/api/*`.
+> For production deployment, configure your reverse proxy (nginx / Caddy) to forward the local `/api/*` routes to the upstream PVWatts and Open-Meteo endpoints used by the app.
 
 ---
 
@@ -137,27 +140,27 @@ web-map/
 ├── src/
 │   ├── App.jsx          # Main application, all layers & tool logic
 │   └── index.css        # Glassmorphism design system
-├── vite.config.js       # Dev proxy config for PVGIS + NASA POWER
+├── vite.config.js       # Dev proxy config for PVWatts + Open-Meteo
 └── package.json
 ```
 
 ---
 
-## Wind Extrapolation Methodology
+## Wind Screening Methodology
 
-The 100 m and 150 m hub-height wind speeds are derived using the **Wind Profile Power Law**:
+Hub-height wind speeds are derived using the **Wind Profile Power Law**:
 
 ```
 v(z) = v_ref × (z / z_ref)^α
 ```
 
-Where the **shear exponent α** is calculated empirically from NASA MERRA-2 data at two reference heights (10 m and 50 m):
+Where the **shear exponent α** is calculated empirically from ERA5 data at two reference heights (10 m and 100 m):
 
 ```
-α = ln(WS₅₀ / WS₁₀) / ln(50 / 10)
+α = ln(WS₁₀₀ / WS₁₀) / ln(100 / 10)
 ```
 
-This is the same methodology used by the Global Wind Atlas and is accepted by IEC 61400 for preliminary wind resource assessment.
+Those hub-height speeds are then density-corrected using temperature and elevation, mapped to a generic turbine power curve, and reduced by a fixed net loss factor to produce an indicative capacity factor. The recent-year result is then blended with trailing yearly baseline windows when available so a single anomalous year does not dominate the screening output. If upstream data is incomplete, the UI now exposes that degraded state instead of silently implying full coverage.
 
 ---
 
@@ -171,15 +174,15 @@ This is the same methodology used by the Global Wind Atlas and is accepted by IE
 
 ## API Notes
 
-### PVGIS
-- **Endpoint:** `re.jrc.ec.europa.eu/api/v5_2/PVcalc`
-- **Parameters:** Fixed-tilt (0°), `peakpower=1 kWp`, standard `loss=14%`
-- **Coverage:** Myanmar is fully within the PVGIS-ERA5 dataset
-- **Rate limit:** Free, no API key required. Reasonable usage only.
+### PVWatts
+- **Endpoint:** `developer.nrel.gov/api/pvwatts/v8.json`
+- **Parameters:** `system_capacity=1 kW`, latitude-based default tilt, `azimuth=180`, conservative regional loss defaults
+- **Coverage:** Global
+- **Rate limit:** API key required
 
-### NASA POWER
-- **Endpoint:** `power.larc.nasa.gov/api/temporal/climatology/point`
-- **Parameters:** `WS10M`, `WS50M` — 20-year annual mean (2001–2020)
+### Open-Meteo Archive
+- **Endpoint:** `archive-api.open-meteo.com/v1/archive`
+- **Parameters:** hourly `wind_speed_10m`, `wind_speed_100m`, `wind_direction_100m`, `temperature_2m`
 - **Coverage:** Global
 - **Rate limit:** Free, no API key required.
 
