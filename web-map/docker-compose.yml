@@ -11,7 +11,7 @@ services:
       - PB_ADMIN_PASSWORD=nixcops5
     volumes:
       - ./pb_data:/pb_data
-    command: serve --http 0.0.0.0:8090
+    command: serve --http 0.0.0.0:8090 --dir /pb_data
 
   web-map:
     build:
