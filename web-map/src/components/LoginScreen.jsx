@@ -16,7 +16,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await login(email, password);
-    } catch (err) {
+    } catch {
       setError('Invalid email or password');
     } finally {
       setLoading(false);

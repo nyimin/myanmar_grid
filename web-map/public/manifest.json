@@ -1,0 +1,16 @@
+{
+  "name": "Myanmar Power Grid",
+  "short_name": "Grid Map",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08101b",
+  "theme_color": "#08101b",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

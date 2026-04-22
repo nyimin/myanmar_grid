@@ -1,7 +1,8 @@
 import { useAuth } from '../contexts/AuthContext';
 import LoginScreen from '../components/LoginScreen';
+import { createElement } from 'react';
 
-export function withAuth(Component) {
+export function withAuth(WrappedComponent) {
   return function AuthenticatedComponent(props) {
     const { user, loading } = useAuth();
 
@@ -19,6 +20,6 @@ export function withAuth(Component) {
       return <LoginScreen />;
     }
 
-    return <Component {...props} />;
+    return createElement(WrappedComponent, props);
   };
 }
