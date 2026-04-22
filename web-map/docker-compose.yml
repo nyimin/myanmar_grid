@@ -29,3 +29,4 @@ services:
 
 volumes:
   pb_data:
+    name: pocketbase_data
