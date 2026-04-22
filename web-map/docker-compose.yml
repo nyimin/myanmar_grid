@@ -7,8 +7,8 @@ services:
     ports:
       - "8090:8090"
     environment:
-      - PB_ADMIN_EMAIL=admin@triunemyanmar.com
-      - PB_ADMIN_PASSWORD=PocketBase123!
+      - PB_ADMIN_EMAIL=nyimin.alt@gmail.com
+      - PB_ADMIN_PASSWORD=nixcops5
     volumes:
       - ./pb_data:/pb_data
     command: serve --http 0.0.0.0:8090
