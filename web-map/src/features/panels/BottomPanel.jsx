@@ -12,6 +12,9 @@ export default function BottomPanel({
   onProximityRadiusChange,
   onClose,
   onSaveLocation,
+  workspaces,
+  saveWorkspaceId,
+  onSaveWorkspaceChange,
   measurePoints,
   measureMousePos,
   onMeasureUndo,
@@ -59,6 +62,9 @@ export default function BottomPanel({
           feature={panel.data}
           adjacencyMap={adjacencyMap}
           onSaveLocation={onSaveLocation}
+          workspaces={workspaces}
+          saveWorkspaceId={saveWorkspaceId}
+          onSaveWorkspaceChange={onSaveWorkspaceChange}
           onFindNearest={onFindNearest}
           onOpenProximity={onOpenProximity}
         />

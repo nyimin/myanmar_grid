@@ -74,9 +74,9 @@ export default function MapView({
     };
   })();
 
-  const workspacePointFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'Point');
-  const workspaceLineFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'LineString');
-  const workspacePolygonFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'Polygon');
+  const workspacePointFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPoint');
+  const workspaceLineFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString');
+  const workspacePolygonFeatures = workspaceFeatures.filter((feature) => feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon');
 
   const layers = [
     showBoundaries && filteredData.boundaries && new GeoJsonLayer({
@@ -220,10 +220,10 @@ export default function MapView({
       pickable: true,
       filled: true,
       stroked: true,
-      getFillColor: [20, 184, 166, 35],
-      getLineColor: [20, 184, 166, 200],
-      getLineWidth: 2,
-      lineWidthMinPixels: 1.5,
+      getFillColor: [249, 115, 22, 52],
+      getLineColor: [249, 115, 22, 240],
+      getLineWidth: 3,
+      lineWidthMinPixels: 2,
       onHover: (info) => setHoverInfo(info),
     }),
     workspacePointFeatures.length > 0 && new GeoJsonLayer({
@@ -274,7 +274,7 @@ export default function MapView({
         )}
       >
         <Map mapStyle={MAP_STYLES[mapTheme]} reuseMaps attributionControl={false}>
-          <AttributionControl compact position="bottom-right" />
+          <AttributionControl compact={false} position="bottom-right" />
           <NavigationControl position="top-right" />
         </Map>
         {hoverInfo?.object && !isMeasureMode && (

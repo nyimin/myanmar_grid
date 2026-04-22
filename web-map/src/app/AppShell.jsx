@@ -1,6 +1,6 @@
 import { FlyToInterpolator } from '@deck.gl/core';
 import * as turf from '@turf/turf';
-import { FolderOpen, Home, Layers3, LocateFixed, Menu, Search, SlidersHorizontal } from 'lucide-react';
+import { Check, FolderOpen, Home, Layers3, LocateFixed, Search, SlidersHorizontal, X } from 'lucide-react';
 import { startTransition, Suspense, lazy, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import LoadingOverlay from '../components/LoadingOverlay.jsx';
 import MapLegend from '../features/map/MapLegend.jsx';
@@ -151,6 +151,10 @@ export default function AppShell() {
   const [recentSelections, setRecentSelections] = useState([]);
   const [legendOpen, setLegendOpen] = useState(window.innerWidth > 960);
   const [locationState, setLocationState] = useState({ kind: 'idle', message: '' });
+  const [saveWorkspaceId, setSaveWorkspaceId] = useState('');
+  const [saveFeedback, setSaveFeedback] = useState(null);
+  const [renameSavedDraft, setRenameSavedDraft] = useState('');
+  const [mobileControlMenuOpen, setMobileControlMenuOpen] = useState(false);
 
   useEffect(() => {
     if (showBoundaries) ensureDataset('boundaries');
@@ -159,6 +163,10 @@ export default function AppShell() {
   useEffect(() => {
     if (visibleLayers.hydro) ensureDataset('hydro');
   }, [ensureDataset, visibleLayers.hydro]);
+
+  useEffect(() => {
+    if (workspace.activeWorkspaceId) setSaveWorkspaceId(workspace.activeWorkspaceId);
+  }, [workspace.activeWorkspaceId]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -346,14 +354,45 @@ export default function AppShell() {
     if (window.innerWidth <= 960) setSidebarOpen(false);
   }, [activeTool, adjacencyMap, datasets, pushRecentSelection, workspace.mapDatasetFeatures]);
 
-  const saveFeatureToWorkspace = useCallback(async (feature) => {
-    if (!feature || !workspace.activeWorkspace) return;
-    await workspace.saveLocation(workspace.activeWorkspace.id, feature.geometry, {
+  const openSavedLocation = useCallback((location) => {
+    if (!location) return;
+    if (location.workspaceId && location.workspaceId !== workspace.activeWorkspaceId) {
+      workspace.setActiveWorkspaceId(location.workspaceId);
+    }
+    jumpToFeature({
+      type: 'Feature',
+      geometry: location.geometry,
+      properties: {
+        ...location.metadata,
+        id: location.id,
+        name: location.name,
+        datasetName: 'Saved Locations',
+        type: 'saved_location',
+        workspaceId: location.workspaceId,
+      },
+    });
+  }, [jumpToFeature, workspace]);
+
+  const saveFeatureToWorkspace = useCallback(async (feature, targetWorkspaceId = saveWorkspaceId || workspace.activeWorkspace?.id) => {
+    if (!feature || !targetWorkspaceId) return null;
+    const targetWorkspace = workspace.workspaces.find((item) => item.id === targetWorkspaceId) || workspace.activeWorkspace;
+    const savedLocation = await workspace.saveLocation(targetWorkspaceId, feature.geometry, {
       name: feature.properties?.name || 'Saved Location',
       type: feature.properties?.type || feature.geometry.type,
       sourceName: feature.properties?.datasetName || feature.properties?.name || 'Map selection',
     });
-  }, [workspace]);
+    setRenameSavedDraft(savedLocation.name);
+    setSaveFeedback({
+      locationId: savedLocation.id,
+      workspaceId: targetWorkspaceId,
+      workspaceName: targetWorkspace?.name || 'Workspace',
+      name: savedLocation.name,
+      geometry: savedLocation.geometry,
+      metadata: savedLocation.metadata,
+      editing: false,
+    });
+    return savedLocation;
+  }, [saveWorkspaceId, workspace]);
 
   const saveSelectedFeature = useCallback(async () => {
     await saveFeatureToWorkspace(panel.data);
@@ -384,8 +423,57 @@ export default function AppShell() {
     setPanel({ type: 'proximity', data: center });
   }, []);
 
+  const zoomToWorkspaceDataset = useCallback((datasetId) => {
+    const dataset = workspace.activeWorkspaceDatasets.find((item) => item.id === datasetId);
+    const featureCollection = dataset?.featureCollection;
+    const features = featureCollection?.features || [];
+    if (!dataset || features.length === 0) return;
+
+    try {
+      const [minLng, minLat, maxLng, maxLat] = turf.bbox(featureCollection);
+      const centerLng = (minLng + maxLng) / 2;
+      const centerLat = (minLat + maxLat) / 2;
+      const span = Math.max(Math.abs(maxLng - minLng), Math.abs(maxLat - minLat));
+      const zoom = span < 0.02 ? 12 : span < 0.08 ? 10.5 : span < 0.2 ? 9.5 : span < 0.8 ? 8 : 6.5;
+
+      setViewState((current) => ({
+        ...current,
+        longitude: centerLng,
+        latitude: centerLat,
+        zoom,
+        transitionDuration: 900,
+        transitionInterpolator: new FlyToInterpolator({ speed: 1.4 }),
+      }));
+      setPanel({ type: 'detail', data: features[0] });
+      if (window.innerWidth <= 960) setSidebarOpen(false);
+    } catch {
+      jumpToFeature(features[0]);
+    }
+  }, [jumpToFeature, workspace.activeWorkspaceDatasets]);
+
+  const isolateWorkspaceDataset = useCallback(async (datasetId) => {
+    const updates = workspace.activeWorkspaceDatasets.map((dataset) => ({
+      id: dataset.id,
+      visible: dataset.id === datasetId,
+    }));
+    for (const update of updates) {
+      if (workspace.activeWorkspaceDatasets.find((item) => item.id === update.id)?.visible !== update.visible) {
+        await workspace.toggleWorkspaceDataset(update.id, update.visible);
+      }
+    }
+  }, [workspace]);
+
+  const showAllWorkspaceDatasets = useCallback(async () => {
+    for (const dataset of workspace.activeWorkspaceDatasets) {
+      if (!dataset.visible) {
+        await workspace.toggleWorkspaceDataset(dataset.id, true);
+      }
+    }
+  }, [workspace]);
+
   const openSidebarSection = useCallback((key) => {
     setSidebarOpen(true);
+    setMobileControlMenuOpen(false);
     window.setTimeout(() => {
       sectionRefs[key]?.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 60);
@@ -422,11 +510,20 @@ export default function AppShell() {
     return () => window.clearTimeout(timer);
   }, [locationState]);
 
+  useEffect(() => {
+    if (!saveFeedback || saveFeedback.editing) return undefined;
+    const timer = window.setTimeout(() => setSaveFeedback(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [saveFeedback]);
+
   const sidebarWorkspaceProps = {
     workspaces: workspace.workspaces,
+    activeWorkspace: workspace.activeWorkspace,
     activeWorkspaceId: workspace.activeWorkspaceId,
     onSelectWorkspace: workspace.setActiveWorkspaceId,
     onCreateWorkspace: workspace.createWorkspace,
+    onRenameWorkspace: workspace.renameWorkspace,
+    activeWorkspacePendingSync: workspace.activeWorkspacePendingSync,
     status: workspace.status,
     datasets: workspace.activeWorkspaceDatasets,
     savedLocations: workspace.activeSavedLocations,
@@ -438,6 +535,9 @@ export default function AppShell() {
       if (!workspace.activeWorkspace) return null;
       return workspace.importKml(file, workspace.activeWorkspace.id);
     },
+    onZoomToDataset: zoomToWorkspaceDataset,
+    onIsolateDataset: isolateWorkspaceDataset,
+    onShowAllDatasets: showAllWorkspaceDatasets,
     onExportDataset: (datasetId) => {
       const dataset = workspace.activeWorkspaceDatasets.find((item) => item.id === datasetId);
       if (!dataset) return;
@@ -445,6 +545,7 @@ export default function AppShell() {
     },
     onRenameSavedLocation: workspace.renameSavedLocation,
     onDeleteSavedLocation: workspace.deleteSavedLocation,
+    onJumpToSavedLocation: openSavedLocation,
     recentSelections,
     onJumpToRecent: jumpToFeature,
     onSaveRecent: saveFeatureToWorkspace,
@@ -524,6 +625,9 @@ export default function AppShell() {
         onProximityRadiusChange={setProximityRadius}
         onClose={() => setPanel({ type: null, data: null })}
         onSaveLocation={saveSelectedFeature}
+        workspaces={workspace.workspaces}
+        saveWorkspaceId={saveWorkspaceId}
+        onSaveWorkspaceChange={setSaveWorkspaceId}
         measurePoints={measurePoints}
         measureMousePos={measureMousePos}
         onMeasureUndo={() => setMeasurePoints((current) => current.slice(0, -1))}
@@ -545,40 +649,126 @@ export default function AppShell() {
       )}
 
       <div className="floating-actions">
-        <button className="floating-btn mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open controls">
-          <Menu size={16} />
-        </button>
         <button className="floating-btn" onClick={handleLocateMe} aria-label="Locate me">
           <LocateFixed size={16} />
         </button>
-        <button className="floating-btn" onClick={resetHome} aria-label="Reset map">
+        <button
+          className="floating-btn mobile-only"
+          onClick={() => setMobileControlMenuOpen((current) => !current)}
+          aria-label="Open controls"
+        >
+          <SlidersHorizontal size={16} />
+        </button>
+        <button className="floating-btn desktop-only" onClick={resetHome} aria-label="Reset map">
           <Home size={16} />
         </button>
       </div>
 
-      <div className="mobile-action-bar glass-panel mobile-only">
-        <button className="mobile-action-btn" onClick={() => openSidebarSection('search')}>
-          <Search size={14} />
-          Search
-        </button>
-        <button className="mobile-action-btn" onClick={() => openSidebarSection('layers')}>
-          <Layers3 size={14} />
-          Layers
-        </button>
-        <button className="mobile-action-btn" onClick={() => openSidebarSection('tools')}>
-          <SlidersHorizontal size={14} />
-          Tools
-        </button>
-        <button className="mobile-action-btn" onClick={() => openSidebarSection('workspace')}>
-          <FolderOpen size={14} />
-          Workspace
-        </button>
-      </div>
+      {mobileControlMenuOpen && (
+        <div className="mobile-control-menu glass-panel mobile-only">
+          <button className="mobile-control-option" onClick={() => openSidebarSection('search')}>
+            <Search size={14} />
+            Search
+          </button>
+          <button className="mobile-control-option" onClick={() => openSidebarSection('layers')}>
+            <Layers3 size={14} />
+            Layers
+          </button>
+          <button className="mobile-control-option" onClick={() => openSidebarSection('tools')}>
+            <SlidersHorizontal size={14} />
+            Controls
+          </button>
+          <button className="mobile-control-option" onClick={() => openSidebarSection('workspace')}>
+            <FolderOpen size={14} />
+            Workspace
+          </button>
+        </div>
+      )}
 
       {locationState.kind !== 'idle' && (
         <div className={`location-toast glass-panel location-toast--${locationState.kind}`}>
           <LocateFixed size={14} />
           <span>{locationState.message}</span>
+        </div>
+      )}
+
+      {saveFeedback && (
+        <div className="save-toast glass-panel">
+          <div className="save-toast-copy">
+            <div className="save-toast-title">
+              <Check size={14} />
+              <span>Saved to {saveFeedback.workspaceName}</span>
+            </div>
+            <div className="save-toast-subtitle">{saveFeedback.name}</div>
+          </div>
+          <div className="save-toast-actions">
+            <button
+              className="secondary-btn"
+              onClick={() => setSaveFeedback((current) => current ? { ...current, editing: true } : current)}
+            >
+              Rename
+            </button>
+            <button
+              className="primary-btn"
+              onClick={() => {
+                const location = workspace.activeSavedLocations.find((item) => item.id === saveFeedback.locationId) || {
+                  id: saveFeedback.locationId,
+                  name: saveFeedback.name,
+                  geometry: saveFeedback.geometry,
+                  metadata: saveFeedback.metadata,
+                  workspaceId: saveFeedback.workspaceId,
+                };
+                openSavedLocation(location);
+                setSaveFeedback(null);
+              }}
+            >
+              View saved
+            </button>
+            <button
+              className="secondary-btn"
+              onClick={async () => {
+                await workspace.deleteSavedLocation(saveFeedback.locationId);
+                setSaveFeedback(null);
+              }}
+            >
+              Undo
+            </button>
+            <button className="icon-btn" onClick={() => setSaveFeedback(null)} aria-label="Dismiss saved message">
+              <X size={14} />
+            </button>
+          </div>
+          {saveFeedback.editing && (
+            <div className="save-toast-editor">
+              <input
+                className="login-input workspace-dialog-input"
+                value={renameSavedDraft}
+                onChange={(event) => setRenameSavedDraft(event.target.value)}
+                autoFocus
+              />
+              <div className="save-toast-actions">
+                <button
+                  className="secondary-btn"
+                  onClick={() => {
+                    setRenameSavedDraft(saveFeedback.name);
+                    setSaveFeedback((current) => current ? { ...current, editing: false } : current);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-btn"
+                  onClick={async () => {
+                    const trimmed = renameSavedDraft.trim();
+                    if (!trimmed) return;
+                    await workspace.renameSavedLocation(saveFeedback.locationId, trimmed);
+                    setSaveFeedback((current) => current ? { ...current, name: trimmed, editing: false } : current);
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

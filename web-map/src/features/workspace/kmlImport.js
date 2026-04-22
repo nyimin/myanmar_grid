@@ -1,3 +1,5 @@
+import { parseKml } from './kmlParser.js';
+
 export function parseKmlText(text) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./kml.worker.js', import.meta.url), { type: 'module' });
@@ -6,6 +8,14 @@ export function parseKmlText(text) {
       const { ok, parsed, error } = event.data;
       worker.terminate();
       if (!ok) {
+        if (error === 'KML parsing is unavailable in this browser context.') {
+          try {
+            resolve(parseKml(text));
+          } catch (fallbackError) {
+            reject(fallbackError);
+          }
+          return;
+        }
         reject(new Error(error));
         return;
       }
@@ -14,7 +24,11 @@ export function parseKmlText(text) {
 
     worker.onerror = (event) => {
       worker.terminate();
-      reject(event.error || new Error('KML parsing failed.'));
+      try {
+        resolve(parseKml(text));
+      } catch (fallbackError) {
+        reject(event.error || fallbackError || new Error('KML parsing failed.'));
+      }
     };
 
     worker.postMessage({ text });

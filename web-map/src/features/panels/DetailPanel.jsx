@@ -20,7 +20,16 @@ function buildSummary(props, geometryType, adjacencyMap) {
   return items.slice(0, 5);
 }
 
-export default function DetailPanel({ feature, adjacencyMap, onSaveLocation, onFindNearest, onOpenProximity }) {
+export default function DetailPanel({
+  feature,
+  adjacencyMap,
+  onSaveLocation,
+  workspaces = [],
+  saveWorkspaceId,
+  onSaveWorkspaceChange,
+  onFindNearest,
+  onOpenProximity,
+}) {
   const [copied, setCopied] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(window.innerWidth > 720);
   const props = useMemo(() => feature?.properties || {}, [feature]);
@@ -100,6 +109,16 @@ export default function DetailPanel({ feature, adjacencyMap, onSaveLocation, onF
           Buffer
         </button>
       </div>
+      {workspaces.length > 1 && (
+        <label className="field-label field-label--compact">
+          Save to workspace
+          <select className="dropdown" value={saveWorkspaceId} onChange={(event) => onSaveWorkspaceChange(event.target.value)}>
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
       {isSubstation && (
         <div className="metric-banner">
           <GitBranch size={14} />

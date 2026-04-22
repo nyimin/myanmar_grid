@@ -296,6 +296,33 @@ export function useWorkspace({ user, pb }) {
     return draft;
   }, [pb, persistWorkspace, user, workspaces.length]);
 
+  const renameWorkspace = useCallback(async (workspaceId, name) => {
+    const workspace = workspaces.find((item) => item.id === workspaceId);
+    const trimmed = name.trim();
+    if (!workspace || !trimmed) return null;
+
+    const next = {
+      ...workspace,
+      name: trimmed,
+      pendingSync: !!user,
+      updatedAt: nowIso(),
+    };
+
+    await persistWorkspace(next);
+
+    if (user && pb) {
+      try {
+        const synced = await syncWorkspaceRecord(pb, user, next);
+        await persistWorkspace(synced);
+        return synced;
+      } catch (error) {
+        console.warn(error);
+      }
+    }
+
+    return next;
+  }, [pb, persistWorkspace, user, workspaces]);
+
   const renameDataset = useCallback(async (datasetId, name) => {
     const dataset = datasets.find((item) => item.id === datasetId);
     if (!dataset || !name.trim()) return;
@@ -497,6 +524,15 @@ export function useWorkspace({ user, pb }) {
     [activeWorkspace, savedLocations],
   );
 
+  const activeWorkspacePendingSync = useMemo(() => {
+    if (!activeWorkspace) return false;
+    return Boolean(
+      activeWorkspace.pendingSync
+      || activeWorkspaceDatasets.some((dataset) => dataset.pendingSync)
+      || activeSavedLocations.some((location) => location.pendingSync),
+    );
+  }, [activeSavedLocations, activeWorkspace, activeWorkspaceDatasets]);
+
   const mapDatasetFeatures = useMemo(() => activeWorkspaceDatasets.flatMap((dataset) => {
     if (!dataset.visible) return [];
     return (dataset.featureCollection?.features || []).map((feature) => ({
@@ -531,9 +567,11 @@ export function useWorkspace({ user, pb }) {
     setActiveWorkspaceId,
     activeWorkspaceDatasets,
     activeSavedLocations,
+    activeWorkspacePendingSync,
     mapDatasetFeatures,
     savedLocationFeatures,
     createWorkspace,
+    renameWorkspace,
     renameDataset,
     deleteDataset,
     reorderDataset,
