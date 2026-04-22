@@ -6,8 +6,11 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
+    environment:
+      - PB_ADMIN_EMAIL=admin@triunemyanmar.com
+      - PB_ADMIN_PASSWORD=PocketBase123!
     volumes:
-      - pb_data:/pb_data
+      - ./pb_data:/pb_data
     command: serve --http 0.0.0.0:8090
 
   web-map:
@@ -23,7 +26,3 @@ services:
       - "4173:4173"
     environment:
       - NODE_ENV=production
-
-volumes:
-  pb_data:
-    driver: local
