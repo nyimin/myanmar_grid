@@ -18,6 +18,10 @@ A high-fidelity, mobile-first GIS application for visualizing and managing Myanm
 - **Distance Measurement**: High-precision line-of-sight measurement tools.
 - **Asset Inspection**: Detailed property panels for every grid element, including voltage, capacity, and source metadata.
 
+### ☀️ Renewable Energy Planner
+- **Meteorological Data APIs**: Real-time integration with PVGIS and Open-Meteo (ERA5) for solar and wind energy profiles.
+- **Conceptual Analysis**: High-fidelity dashboards for early-stage project feasibility, evaluating topography, infrastructure proximity, and seasonal generation.
+
 ### 📁 User Workspace
 - **PocketBase Integration**: Secure, authenticated workspace for syncing data across devices.
 - **KML/KMZ Import**: High-performance KML parsing using Web Workers and normalization to WGS84.
@@ -35,6 +39,8 @@ A high-fidelity, mobile-first GIS application for visualizing and managing Myanm
 - **Data Layers**: [Deck.gl](https://deck.gl/) (Geo-layers)
 - **Backend/Auth**: [PocketBase](https://pocketbase.io/)
 - **Spatial Logic**: [Turf.js](https://turfjs.org/)
+- **Meteorological APIs**: PVGIS, Open-Meteo, PVWATTS
+- **Deployment**: Docker, Dokploy
 - **UI Icons**: [Lucide React](https://lucide.dev/)
 
 ## 🚀 Getting Started
@@ -66,6 +72,10 @@ npm run build
 # Preview production build
 npm run preview
 ```
+
+### Docker & Dokploy Deployment
+A `docker-compose.yml` is included for full-stack deployment, which orchestrates the frontend and a persistent PocketBase backend instance.
+For PocketBase data persistence on platforms like Dokploy, the volume is explicitly named `pocketbase_data`. See `docs/pocketbase-setup.md` for instructions on creating the initial superuser.
 
 ## 📂 Project Structure
 
