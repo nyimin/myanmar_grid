@@ -963,7 +963,7 @@ button {
 
 .map-shell .maplibregl-ctrl-bottom-right,
 .map-shell .maplibregl-ctrl-bottom-left {
-  bottom: calc(var(--safe-bottom) + 62px);
+  bottom: calc(var(--safe-bottom) + 16px);
 }
 
 .map-shell .maplibregl-ctrl-attrib {
@@ -1228,13 +1228,13 @@ button {
     left: 12px;
     right: 12px;
     right: auto;
-    bottom: 78px;
+    bottom: 24px;
   }
 
   .mobile-control-menu {
     position: fixed;
     left: 12px;
-    bottom: 72px;
+    bottom: 24px;
     z-index: 66;
     display: grid;
     gap: 6px;
@@ -1270,7 +1270,7 @@ button {
 
   .map-shell .maplibregl-ctrl-bottom-right,
   .map-shell .maplibregl-ctrl-bottom-left {
-    bottom: 72px;
+    bottom: 24px;
   }
 
   .map-shell .maplibregl-ctrl-attrib {

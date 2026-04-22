@@ -10,7 +10,7 @@ services:
       - PB_ADMIN_EMAIL=nyimin.alt@gmail.com
       - PB_ADMIN_PASSWORD=nixcops5
     volumes:
-      - ./pb_data:/pb_data
+      - pb_data:/pb_data
     command: serve --http 0.0.0.0:8090 --dir /pb_data
 
   web-map:
@@ -26,3 +26,6 @@ services:
       - "4173:4173"
     environment:
       - NODE_ENV=production
+
+volumes:
+  pb_data:
